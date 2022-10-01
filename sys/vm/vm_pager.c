@@ -166,7 +166,6 @@ static const struct pagerops deadpagerops = {
 };
 
 const struct pagerops *pagertab[16] __read_mostly = {
-	[OBJT_DEFAULT] =	&defaultpagerops,
 	[OBJT_SWAP] =		&swappagerops,
 	[OBJT_VNODE] =		&vnodepagerops,
 	[OBJT_DEVICE] =		&devicepagerops,
@@ -190,7 +189,7 @@ vm_pager_init(void)
 	 */
 	for (i = 0; i < OBJT_FIRST_DYN; i++) {
 		pgops = &pagertab[i];
-		if ((*pgops)->pgo_init != NULL)
+		if (*pgops != NULL && (*pgops)->pgo_init != NULL)
 			(*(*pgops)->pgo_init)();
 	}
 }
@@ -338,12 +337,11 @@ vm_pager_get_pages(vm_object_t object, vm_page_t *m, int count, int *rbehind,
 		 * updated the array.
 		 */
 #ifdef INVARIANTS
-		VM_OBJECT_RLOCK(object);
-		KASSERT(m[i] == vm_page_lookup(object, pindex++),
+		KASSERT(m[i] == vm_page_relookup(object, pindex++),
 		    ("%s: mismatch page %p pindex %ju", __func__,
 		    m[i], (uintmax_t )pindex - 1));
-		VM_OBJECT_RUNLOCK(object);
 #endif
+
 		/*
 		 * Zero out partially filled data.
 		 */
@@ -403,7 +401,7 @@ vm_pager_alloc_dyn_type(struct pagerops *ops, int base_type)
 
 	mtx_lock(&pagertab_lock);
 	MPASS(base_type == -1 ||
-	    (base_type >= OBJT_DEFAULT && base_type < nitems(pagertab)));
+	    (base_type >= OBJT_SWAP && base_type < nitems(pagertab)));
 	for (res = OBJT_FIRST_DYN; res < nitems(pagertab); res++) {
 		if (pagertab[res] == NULL)
 			break;
@@ -468,7 +466,7 @@ pbuf_ctor(void *mem, int size, void *arg, int flags)
 	bp->b_ioflags = 0;
 	bp->b_iodone = NULL;
 	bp->b_error = 0;
-	BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
+	BUF_LOCK(bp, LK_EXCLUSIVE | LK_NOWAIT, NULL);
 
 	return (0);
 }
@@ -490,19 +488,25 @@ pbuf_dtor(void *mem, int size, void *arg)
 	BUF_UNLOCK(bp);
 }
 
+static const char pbuf_wmesg[] = "pbufwait";
+
 static int
 pbuf_init(void *mem, int size, int flags)
 {
 	struct buf *bp = mem;
 
+	TSENTER();
+
 	bp->b_kvabase = (void *)kva_alloc(ptoa(PBUF_PAGES));
 	if (bp->b_kvabase == NULL)
 		return (ENOMEM);
 	bp->b_kvasize = ptoa(PBUF_PAGES);
-	BUF_LOCKINIT(bp);
+	BUF_LOCKINIT(bp, pbuf_wmesg);
 	LIST_INIT(&bp->b_dep);
 	bp->b_rcred = bp->b_wcred = NOCRED;
 	bp->b_xflags = 0;
+
+	TSEXIT();
 
 	return (0);
 }

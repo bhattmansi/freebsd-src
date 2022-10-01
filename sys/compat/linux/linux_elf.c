@@ -41,19 +41,15 @@
 __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/exec.h>
 #include <sys/imgact.h>
 #include <sys/imgact_elf.h>
-#include <sys/kernel.h>
+#include <sys/lock.h>
+#include <sys/malloc.h>
+#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/procfs.h>
-#include <sys/ptrace.h>
 #include <sys/reg.h>
 #include <sys/sbuf.h>
-#include <sys/sysent.h>
-#include <sys/user.h>
-#include <sys/vnode.h>
 
 #include <machine/elf.h>
 
@@ -159,13 +155,16 @@ __linuxN(note_prpsinfo)(void *arg, struct sbuf *sb, size_t *sizep)
 			    sizeof(psinfo->pr_psargs), SBUF_FIXEDLEN);
 			error = proc_getargv(curthread, p, &sbarg);
 			PRELE(p);
-			if (sbuf_finish(&sbarg) == 0)
+			if (sbuf_finish(&sbarg) == 0) {
 				len = sbuf_len(&sbarg) - 1;
-			else
+				if (len > 0)
+					len--;
+			} else {
 				len = sizeof(psinfo->pr_psargs) - 1;
+			}
 			sbuf_delete(&sbarg);
 		}
-		if (error || len == 0)
+		if (error != 0 || len == 0 || (ssize_t)len == -1)
 			strlcpy(psinfo->pr_psargs, p->p_comm,
 			    sizeof(psinfo->pr_psargs));
 		else {

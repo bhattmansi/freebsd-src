@@ -107,6 +107,10 @@ static int	nfs_reconnects;
 static int	nfs3_jukebox_delay = 10;
 static int	nfs_skip_wcc_data_onerr = 1;
 static int	nfs_dsretries = 2;
+static struct timespec	nfs_trylater_max = {
+	.tv_sec		= NFS_TRYLATERDEL,
+	.tv_nsec	= 0,
+};
 
 SYSCTL_DECL(_vfs_nfs);
 
@@ -584,12 +588,11 @@ newnfs_request(struct nfsrv_descript *nd, struct nfsmount *nmp,
     u_char *retsum, int toplevel, u_int64_t *xidp, struct nfsclsession *dssep)
 {
 	uint32_t retseq, retval, slotseq, *tl;
-	time_t waituntil;
 	int i = 0, j = 0, opcnt, set_sigset = 0, slot;
 	int error = 0, usegssname = 0, secflavour = AUTH_SYS;
 	int freeslot, maxslot, reterr, slotpos, timeo;
 	u_int16_t procnum;
-	u_int nextconn, trylater_delay = 1;
+	u_int nextconn;
 	struct nfs_feedback_arg nf;
 	struct timeval timo;
 	AUTH *auth;
@@ -602,7 +605,11 @@ newnfs_request(struct nfsrv_descript *nd, struct nfsmount *nmp,
 	struct nfsclsession *sep;
 	uint8_t sessionid[NFSX_V4SESSIONID];
 	bool nextconn_set;
+	struct timespec trylater_delay, ts, waituntil;
 
+	/* Initially 1msec. */
+	trylater_delay.tv_sec = 0;
+	trylater_delay.tv_nsec = 1000000;
 	sep = dssep;
 	if (xidp != NULL)
 		*xidp = 0;
@@ -632,8 +639,17 @@ newnfs_request(struct nfsrv_descript *nd, struct nfsmount *nmp,
 	if (nrp->nr_client == NULL)
 		newnfs_connect(nmp, nrp, cred, td, 0, false, &nrp->nr_client);
 
+	/*
+	 * If the "nconnect" mount option was specified and this RPC is
+	 * one that can have a large RPC message and is being done through
+	 * the NFS/MDS server, use an additional connection. (When the RPC is
+	 * being done through the server/MDS, nrp == &nmp->nm_sockreq.)
+	 * The "nconnect" mount option normally has minimal effect when the
+	 * "pnfs" mount option is specified, since only Readdir RPCs are
+	 * normally done through the NFS/MDS server.
+	 */
 	nextconn_set = false;
-	if (nmp != NULL && nmp->nm_aconnect > 0 &&
+	if (nmp != NULL && nmp->nm_aconnect > 0 && nrp == &nmp->nm_sockreq &&
 	    (nd->nd_procnum == NFSPROC_READ ||
 	     nd->nd_procnum == NFSPROC_READDIR ||
 	     nd->nd_procnum == NFSPROC_READDIRPLUS ||
@@ -909,10 +925,8 @@ tryagain:
 	} else if (stat == RPC_PROGVERSMISMATCH) {
 		NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
 		error = EPROTONOSUPPORT;
-	} else if (stat == RPC_INTR) {
-		error = EINTR;
 	} else if (stat == RPC_CANTSEND || stat == RPC_CANTRECV ||
-	     stat == RPC_SYSTEMERROR) {
+	     stat == RPC_SYSTEMERROR || stat == RPC_INTR) {
 		/* Check for a session slot that needs to be free'd. */
 		if ((nd->nd_flag & (ND_NFSV41 | ND_HASSLOTID)) ==
 		    (ND_NFSV41 | ND_HASSLOTID) && nmp != NULL &&
@@ -935,12 +949,17 @@ tryagain:
 			 */
 			mtx_lock(&sep->nfsess_mtx);
 			sep->nfsess_slotseq[nd->nd_slotid] += 10;
+			sep->nfsess_badslots |= (0x1ULL << nd->nd_slotid);
 			mtx_unlock(&sep->nfsess_mtx);
 			/* And free the slot. */
 			nfsv4_freeslot(sep, nd->nd_slotid, false);
 		}
-		NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
-		error = ENXIO;
+		if (stat == RPC_INTR)
+			error = EINTR;
+		else {
+			NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
+			error = ENXIO;
+		}
 	} else {
 		NFSINCRGLOBAL(nfsstatsv1.rpcinvalid);
 		error = EACCES;
@@ -1003,8 +1022,16 @@ tryagain:
 			 * If the first op is Sequence, free up the slot.
 			 */
 			if ((nmp != NULL && i == NFSV4OP_SEQUENCE && j != 0) ||
-			    (clp != NULL && i == NFSV4OP_CBSEQUENCE && j != 0))
+			   (clp != NULL && i == NFSV4OP_CBSEQUENCE && j != 0)) {
 				NFSCL_DEBUG(1, "failed seq=%d\n", j);
+				if (sep != NULL && i == NFSV4OP_SEQUENCE &&
+				    j == NFSERR_SEQMISORDERED) {
+					mtx_lock(&sep->nfsess_mtx);
+					sep->nfsess_badslots |=
+					    (0x1ULL << nd->nd_slotid);
+					mtx_unlock(&sep->nfsess_mtx);
+				}
+			}
 			if (((nmp != NULL && i == NFSV4OP_SEQUENCE && j == 0) ||
 			    (clp != NULL && i == NFSV4OP_CBSEQUENCE &&
 			    j == 0)) && sep != NULL) {
@@ -1022,7 +1049,43 @@ tryagain:
 					tl += NFSX_V4SESSIONID / NFSX_UNSIGNED;
 					retseq = fxdr_unsigned(uint32_t, *tl++);
 					slot = fxdr_unsigned(int, *tl++);
-					freeslot = slot;
+					if ((nd->nd_flag & ND_HASSLOTID) != 0) {
+						if (slot >= NFSV4_SLOTS ||
+						    (i == NFSV4OP_CBSEQUENCE &&
+						     slot >= NFSV4_CBSLOTS)) {
+							printf("newnfs_request:"
+							    " Bogus slot\n");
+							slot = nd->nd_slotid;
+						} else if (slot !=
+						    nd->nd_slotid) {
+						    printf("newnfs_request:"
+							" Wrong session "
+							"srvslot=%d "
+							"slot=%d\n", slot,
+							nd->nd_slotid);
+						    if (i == NFSV4OP_SEQUENCE) {
+							/*
+							 * Mark both slots as
+							 * bad, because we do
+							 * not know if the
+							 * server has advanced
+							 * the sequence# for
+							 * either of them.
+							 */
+							sep->nfsess_badslots |=
+							    (0x1ULL << slot);
+							sep->nfsess_badslots |=
+							    (0x1ULL <<
+							     nd->nd_slotid);
+						    }
+						    slot = nd->nd_slotid;
+						}
+						freeslot = slot;
+					} else if (slot != 0) {
+						printf("newnfs_request: Bad "
+						    "session slot=%d\n", slot);
+						slot = 0;
+					}
 					if (retseq != sep->nfsess_slotseq[slot])
 						printf("retseq diff 0x%x\n",
 						    retseq);
@@ -1068,6 +1131,10 @@ tryagain:
 				sep = NFSMNT_MDSSESSION(nmp);
 				if (bcmp(sep->nfsess_sessionid, nd->nd_sequence,
 				    NFSX_V4SESSIONID) == 0) {
+					printf("Initiate recovery. If server "
+					    "has not rebooted, "
+					    "check NFS clients for unique "
+					    "/etc/hostid's\n");
 					/* Initiate recovery. */
 					sep->nfsess_defunct = 1;
 					NFSCL_DEBUG(1, "Marked defunct\n");
@@ -1093,7 +1160,7 @@ tryagain:
 				if ((nd->nd_flag & ND_LOOPBADSESS) != 0) {
 					reterr = nfsv4_sequencelookup(nmp, sep,
 					    &slotpos, &maxslot, &slotseq,
-					    sessionid);
+					    sessionid, true);
 					if (reterr == 0) {
 						/* Fill in new session info. */
 						NFSCL_DEBUG(1,
@@ -1106,6 +1173,8 @@ tryagain:
 						*tl++ = txdr_unsigned(slotseq);
 						*tl++ = txdr_unsigned(slotpos);
 						*tl = txdr_unsigned(maxslot);
+						nd->nd_slotid = slotpos;
+						nd->nd_flag |= ND_HASSLOTID;
 					}
 					if (reterr == NFSERR_BADSESSION ||
 					    reterr == 0) {
@@ -1144,12 +1213,19 @@ tryagain:
 			    (nd->nd_repstat == NFSERR_DELAY &&
 			     (nd->nd_flag & ND_NFSV4) == 0) ||
 			    nd->nd_repstat == NFSERR_RESOURCE) {
-				if (trylater_delay > NFS_TRYLATERDEL)
-					trylater_delay = NFS_TRYLATERDEL;
-				waituntil = NFSD_MONOSEC + trylater_delay;
-				while (NFSD_MONOSEC < waituntil)
-					(void) nfs_catnap(PZERO, 0, "nfstry");
-				trylater_delay *= 2;
+				/* Clip at NFS_TRYLATERDEL. */
+				if (timespeccmp(&trylater_delay,
+				    &nfs_trylater_max, >))
+					trylater_delay = nfs_trylater_max;
+				getnanouptime(&waituntil);
+				timespecadd(&waituntil, &trylater_delay,
+				    &waituntil);
+				do {
+					nfs_catnap(PZERO, 0, "nfstry");
+					getnanouptime(&ts);
+				} while (timespeccmp(&ts, &waituntil, <));
+				timespecadd(&trylater_delay, &trylater_delay,
+				    &trylater_delay);	/* Double each time. */
 				if (slot != -1) {
 					mtx_lock(&sep->nfsess_mtx);
 					sep->nfsess_slotseq[slot]++;
@@ -1284,9 +1360,13 @@ newnfs_nmcancelreqs(struct nfsmount *nmp)
 {
 	struct nfsclds *dsp;
 	struct __rpc_client *cl;
+	int i;
 
 	if (nmp->nm_sockreq.nr_client != NULL)
 		CLNT_CLOSE(nmp->nm_sockreq.nr_client);
+	for (i = 0; i < nmp->nm_aconnect; i++)
+		if (nmp->nm_aconn[i] != NULL)
+			CLNT_CLOSE(nmp->nm_aconn[i]);
 lookformore:
 	NFSLOCKMNT(nmp);
 	TAILQ_FOREACH(dsp, &nmp->nm_sess, nfsclds_list) {

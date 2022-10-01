@@ -150,6 +150,8 @@ rk_clk_fract_init(struct clknode *clk, device_t dev)
 
 	sc->numerator  = (reg >> 16) & 0xFFFF;
 	sc->denominator  = reg & 0xFFFF;
+	if (sc->denominator == 0)
+		sc->denominator = 1;
 	clknode_init_parent_idx(clk, 0);
 
 	return(0);
@@ -179,9 +181,6 @@ rk_clk_fract_set_gate(struct clknode *clk, bool enable)
 	return (0);
 }
 
-static int
-rk_clk_fract_set_freq(struct clknode *clk, uint64_t fin, uint64_t *fout,
-    int flags, int *stop);
 static int
 rk_clk_fract_recalc(struct clknode *clk, uint64_t *freq)
 {

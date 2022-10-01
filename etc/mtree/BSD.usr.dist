@@ -9,6 +9,8 @@
     ..
     include
         private
+            bsddialog
+            ..
             bsdstat
             ..
             event1
@@ -35,7 +37,7 @@
     ..
     lib
         clang
-            12.0.1
+            14.0.5
                 include
                     cuda_wrappers
                     ..
@@ -55,6 +57,8 @@
                 lib
                     freebsd
                     ..
+                ..
+                share
                 ..
             ..
         ..
@@ -167,6 +171,10 @@
     ..
     share
         atf             tags=package=tests
+        ..
+        bhyve
+            kbdlayout
+            ..
         ..
         bsdconfig
             media
@@ -890,8 +898,6 @@
             Mexico
             ..
             Pacific
-            ..
-            SystemV
             ..
             US
             ..

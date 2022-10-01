@@ -85,8 +85,6 @@ static MALLOC_DEFINE(M_CDEVPDATA, "DEVFSP", "Metainfo for cdev-fp data");
 
 struct mtx	devfs_de_interlock;
 MTX_SYSINIT(devfs_de_interlock, &devfs_de_interlock, "devfs interlock", MTX_DEF);
-struct sx	clone_drain_lock;
-SX_SYSINIT(clone_drain_lock, &clone_drain_lock, "clone events drain lock");
 struct mtx	cdevpriv_mtx;
 MTX_SYSINIT(cdevpriv_mtx, &cdevpriv_mtx, "cdevpriv lock", MTX_DEF);
 
@@ -507,20 +505,6 @@ devfs_allocv_drop_refs(int drop_dm_lock, struct devfs_mount *dmp,
 	return (not_found);
 }
 
-static void
-devfs_insmntque_dtr(struct vnode *vp, void *arg)
-{
-	struct devfs_dirent *de;
-
-	de = (struct devfs_dirent *)arg;
-	mtx_lock(&devfs_de_interlock);
-	vp->v_data = NULL;
-	de->de_vnode = NULL;
-	mtx_unlock(&devfs_de_interlock);
-	vgone(vp);
-	vput(vp);
-}
-
 /*
  * devfs_allocv shall be entered with dmp->dm_lock held, and it drops
  * it on return.
@@ -617,8 +601,14 @@ loop:
 	vp->v_data = de;
 	de->de_vnode = vp;
 	mtx_unlock(&devfs_de_interlock);
-	error = insmntque1(vp, mp, devfs_insmntque_dtr, de);
+	error = insmntque1(vp, mp);
 	if (error != 0) {
+		mtx_lock(&devfs_de_interlock);
+		vp->v_data = NULL;
+		de->de_vnode = NULL;
+		mtx_unlock(&devfs_de_interlock);
+		vgone(vp);
+		vput(vp);
 		(void) devfs_allocv_drop_refs(1, dmp, de);
 		return (error);
 	}
@@ -681,7 +671,7 @@ devfs_close(struct vop_close_args *ap)
 
 	/*
 	 * XXX: Don't call d_close() if we were called because of
-	 * XXX: insmntque1() failure.
+	 * XXX: insmntque() failure.
 	 */
 	if (vp->v_data == NULL)
 		return (0);
@@ -1110,10 +1100,8 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 		cdev = NULL;
 		DEVFS_DMP_HOLD(dmp);
 		sx_xunlock(&dmp->dm_lock);
-		sx_slock(&clone_drain_lock);
 		EVENTHANDLER_INVOKE(dev_clone,
 		    td->td_ucred, pname, strlen(pname), &cdev);
-		sx_sunlock(&clone_drain_lock);
 
 		if (cdev == NULL)
 			sx_xlock(&dmp->dm_lock);
@@ -1152,7 +1140,6 @@ devfs_lookupx(struct vop_lookup_args *ap, int *dm_unlock)
 	if (de == NULL || de->de_flags & DE_WHITEOUT) {
 		if ((nameiop == CREATE || nameiop == RENAME) &&
 		    (flags & (LOCKPARENT | WANTPARENT)) && (flags & ISLASTCN)) {
-			cnp->cn_flags |= SAVENAME;
 			return (EJUSTRETURN);
 		}
 		return (ENOENT);
@@ -1353,7 +1340,7 @@ devfs_pathconf(struct vop_pathconf_args *ap)
 #ifdef MAC
 		/*
 		 * If MAC is enabled, devfs automatically supports
-		 * trivial non-persistant label storage.
+		 * trivial non-persistent label storage.
 		 */
 		*ap->a_retval = 1;
 #else
@@ -2064,6 +2051,7 @@ static struct vop_vector devfs_vnodeops = {
 	.vop_lock1 =		vop_lock,
 	.vop_unlock =		vop_unlock,
 	.vop_islocked =		vop_islocked,
+	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
 };
 VFS_VOP_VECTOR_REGISTER(devfs_vnodeops);
 
@@ -2105,6 +2093,7 @@ static struct vop_vector devfs_specops = {
 	.vop_lock1 =		vop_lock,
 	.vop_unlock =		vop_unlock,
 	.vop_islocked =		vop_islocked,
+	.vop_add_writecount =	vop_stdadd_writecount_nomsync,
 };
 VFS_VOP_VECTOR_REGISTER(devfs_specops);
 

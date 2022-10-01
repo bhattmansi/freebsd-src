@@ -108,6 +108,7 @@ pfs_vncache_unload(void)
 	KASSERT(pfs_vncache_entries == 0,
 	    ("%d vncache entries remaining", pfs_vncache_entries));
 	mtx_destroy(&pfs_vncache_mutex);
+	hashdestroy(pfs_vncache_hashtbl, M_PFSVNCACHE, pfs_vncache_hash);
 }
 
 /*
@@ -217,9 +218,9 @@ retry2:
 		if (pvd2->pvd_pn == pn && pvd2->pvd_pid == pid &&
 		    pvd2->pvd_vnode->v_mount == mp) {
 			vp = pvd2->pvd_vnode;
-			VI_LOCK(vp);
+			vs = vget_prep(vp);
 			mtx_unlock(&pfs_vncache_mutex);
-			if (vget(vp, LK_EXCLUSIVE | LK_INTERLOCK) == 0) {
+			if (vget_finish(vp, LK_EXCLUSIVE, vs) == 0) {
 				++pfs_vncache_hits;
 				vgone(*vpp);
 				vput(*vpp);

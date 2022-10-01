@@ -1,5 +1,7 @@
 # $FreeBSD$
 
+PACKAGE=	pkg-bootstrap
+
 _BRANCH!=	${MAKE} -C ${SRCTOP}/release -V BRANCH
 BRANCH?=	${_BRANCH}
 .if ${BRANCH:MCURRENT} != ""
@@ -8,7 +10,7 @@ PKGCONFBRANCH?=	latest
 . if ${BRANCH:MBETA*} || ${BRANCH:MRC*} || ${BRANCH:MRELEASE*}
 PKGCONFBRANCH?=	quarterly
 . else
-.  if ${MACHINE} != "amd64" && ${MACHINE} != "i386"
+.  if ${MACHINE} != "amd64" && ${MACHINE} != "i386" && ${MACHINE} != "arm64"
 PKGCONFBRANCH?=	quarterly
 .  else
 PKGCONFBRANCH?=	latest

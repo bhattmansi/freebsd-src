@@ -38,14 +38,14 @@
  * The database only stores string values.  Callers should parse
  * values into other types if needed.  String values can reference
  * other configuration variables using a '%(name)' syntax.  In this
- * case, the name must be the the full path of the configuration
+ * case, the name must be the full path of the configuration
  * variable.  The % character can be escaped with a preceding \ to
  * avoid expansion.  Any \ characters must be escaped.
  *
  * Configuration variables are stored in a tree.  The full path of a
  * variable is specified as a dot-separated name similar to sysctl(8)
  * OIDs.
- */ 
+ */
 
 /*
  * Fetches the value of a configuration variable.  If the "raw" value
@@ -100,10 +100,22 @@ void	set_config_value_node(nvlist_t *parent, const char *name,
     const char *value);
 
 /*
+ * Similar to set_config_value_node but only sets value if it's unset yet.
+ */
+void 	set_config_value_node_if_unset(nvlist_t *const parent,
+    const char *const name, const char *const value);
+
+/*
  * Similar to set_config_value_node but expects a full path to the
  * leaf node.
  */
 void	set_config_value(const char *path, const char *value);
+
+/*
+ * Similar to set_config_value but only sets the value if it's unset yet.
+ */
+void 	set_config_value_if_unset(const char *const path,
+    const char *const value);
 
 /* Convenience wrappers for boolean variables. */
 bool	get_config_bool(const char *path);

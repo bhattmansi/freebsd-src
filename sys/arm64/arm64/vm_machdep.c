@@ -94,6 +94,8 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	/* Clear the debug register state. */
 	bzero(&pcb2->pcb_dbg_regs, sizeof(pcb2->pcb_dbg_regs));
 
+	ptrauth_fork(td2, td1);
+
 	tf = (struct trapframe *)STACKALIGN((struct trapframe *)pcb2 - 1);
 	bcopy(td1->td_frame, tf, sizeof(*tf));
 	tf->tf_x[0] = 0;
@@ -103,16 +105,21 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	td2->td_frame = tf;
 
 	/* Set the return value registers for fork() */
-	td2->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
-	td2->td_pcb->pcb_x[9] = (uintptr_t)td2;
+	td2->td_pcb->pcb_x[19] = (uintptr_t)fork_return;
+	td2->td_pcb->pcb_x[20] = (uintptr_t)td2;
 	td2->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
 	td2->td_pcb->pcb_sp = (uintptr_t)td2->td_frame;
-	td2->td_pcb->pcb_fpusaved = &td2->td_pcb->pcb_fpustate;
-	td2->td_pcb->pcb_vfpcpu = UINT_MAX;
+
+	vfp_new_thread(td2, td1, true);
 
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
 	td2->td_md.md_saved_daif = PSR_DAIF_DEFAULT;
+
+#if defined(PERTHREAD_SSP)
+	/* Set the new canary */
+	arc4random_buf(&td2->td_md.md_canary, sizeof(td2->td_md.md_canary));
+#endif
 }
 
 void
@@ -176,17 +183,25 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	bcopy(td0->td_frame, td->td_frame, sizeof(struct trapframe));
 	bcopy(td0->td_pcb, td->td_pcb, sizeof(struct pcb));
 
-	td->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
-	td->td_pcb->pcb_x[9] = (uintptr_t)td;
+	td->td_pcb->pcb_x[19] = (uintptr_t)fork_return;
+	td->td_pcb->pcb_x[20] = (uintptr_t)td;
 	td->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
 	td->td_pcb->pcb_sp = (uintptr_t)td->td_frame;
-	td->td_pcb->pcb_fpflags &= ~(PCB_FP_STARTED | PCB_FP_KERN | PCB_FP_NOSAVE);
-	td->td_pcb->pcb_fpusaved = &td->td_pcb->pcb_fpustate;
-	td->td_pcb->pcb_vfpcpu = UINT_MAX;
+
+	/* Update VFP state for the new thread */
+	vfp_new_thread(td, td0, false);
 
 	/* Setup to release spin count in fork_exit(). */
 	td->td_md.md_spinlock_count = 1;
 	td->td_md.md_saved_daif = PSR_DAIF_DEFAULT;
+
+#if defined(PERTHREAD_SSP)
+	/* Set the new canary */
+	arc4random_buf(&td->td_md.md_canary, sizeof(td->td_md.md_canary));
+#endif
+
+	/* Generate new pointer authentication keys. */
+	ptrauth_copy_thread(td, td0);
 }
 
 /*
@@ -249,6 +264,7 @@ cpu_thread_alloc(struct thread *td)
 	    td->td_kstack_pages * PAGE_SIZE) - 1;
 	td->td_frame = (struct trapframe *)STACKALIGN(
 	    (struct trapframe *)td->td_pcb - 1);
+	ptrauth_thread_alloc(td);
 }
 
 void
@@ -271,8 +287,8 @@ void
 cpu_fork_kthread_handler(struct thread *td, void (*func)(void *), void *arg)
 {
 
-	td->td_pcb->pcb_x[8] = (uintptr_t)func;
-	td->td_pcb->pcb_x[9] = (uintptr_t)arg;
+	td->td_pcb->pcb_x[19] = (uintptr_t)func;
+	td->td_pcb->pcb_x[20] = (uintptr_t)arg;
 }
 
 void
@@ -293,12 +309,4 @@ cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
 {
 
 	return (EINVAL);
-}
-
-void
-swi_vm(void *v)
-{
-
-	if (busdma_swi_pending != 0)
-		busdma_swi();
 }

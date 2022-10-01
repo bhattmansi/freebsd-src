@@ -92,6 +92,8 @@ static int bsd_to_linux_sigtbl[LINUX_SIGTBLSZ] = {
 	LINUX_SIGUSR2	/* SIGUSR2 */
 };
 
+#define	LINUX_SIGPWREMU	(SIGRTMIN + (LINUX_SIGRTMAX - LINUX_SIGRTMIN) + 1)
+
 static int linux_to_bsd_sigtbl[LINUX_SIGTBLSZ] = {
 	SIGHUP,		/* LINUX_SIGHUP */
 	SIGINT,		/* LINUX_SIGINT */
@@ -127,7 +129,7 @@ static int linux_to_bsd_sigtbl[LINUX_SIGTBLSZ] = {
 	 * to the first unused FreeBSD signal number. Since Linux supports
 	 * signals from 1 to 64 we are ok here as our SIGRTMIN = 65.
 	 */
-	SIGRTMIN,	/* LINUX_SIGPWR */
+	LINUX_SIGPWREMU,/* LINUX_SIGPWR */
 	SIGSYS		/* LINUX_SIGSYS */
 };
 
@@ -144,14 +146,14 @@ static inline int
 linux_to_bsd_rt_signal(int sig)
 {
 
-	return (SIGRTMIN + 1 + sig - LINUX_SIGRTMIN);
+	return (SIGRTMIN + sig - LINUX_SIGRTMIN);
 }
 
 static inline int
 bsd_to_linux_rt_signal(int sig)
 {
 
-	return (sig - SIGRTMIN - 1 + LINUX_SIGRTMIN);
+	return (sig - SIGRTMIN + LINUX_SIGRTMIN);
 }
 
 int
@@ -172,7 +174,7 @@ bsd_to_linux_signal(int sig)
 
 	if (sig <= LINUX_SIGTBLSZ)
 		return (bsd_to_linux_sigtbl[_SIG_IDX(sig)]);
-	if (sig == SIGRTMIN)
+	if (sig == LINUX_SIGPWREMU)
 		return (LINUX_SIGPWR);
 
 	return (bsd_to_linux_rt_signal(sig));
@@ -400,28 +402,20 @@ bsd_to_linux_sockaddr(const struct sockaddr *sa, struct l_sockaddr **lsa,
     socklen_t len)
 {
 	struct l_sockaddr *kosa;
-	int error, bdom;
+	int bdom;
 
 	*lsa = NULL;
 	if (len < 2 || len > UCHAR_MAX)
 		return (EINVAL);
-
-	kosa = malloc(len, M_SONAME, M_WAITOK);
-	bcopy(sa, kosa, len);
-
 	bdom = bsd_to_linux_domain(sa->sa_family);
-	if (bdom == -1) {
-		error = EAFNOSUPPORT;
-		goto out;
-	}
+	if (bdom == -1)
+		return (EAFNOSUPPORT);
 
+	kosa = malloc(len, M_LINUX, M_WAITOK);
+	bcopy(sa, kosa, len);
 	kosa->sa_family = bdom;
 	*lsa = kosa;
 	return (0);
-
-out:
-	free(kosa, M_SONAME);
-	return (error);
 }
 
 int
@@ -633,8 +627,6 @@ void
 linux_to_bsd_poll_events(struct thread *td, int fd, short lev,
     short *bev)
 {
-	struct proc *p = td->td_proc;
-	struct filedesc *fdp;
 	struct file *fp;
 	int error;
 	short bits = 0;
@@ -666,8 +658,7 @@ linux_to_bsd_poll_events(struct thread *td, int fd, short lev,
 		 * on non-socket file descriptors unlike FreeBSD, where
 		 * events bits is more strictly checked (POLLSTANDARD).
 		 */
-		fdp = p->p_fd;
-		error = fget_unlocked(fdp, fd, &cap_no_rights, &fp);
+		error = fget_unlocked(td, fd, &cap_no_rights, &fp);
 		if (error == 0) {
 			/*
 			 * XXX. On FreeBSD POLLRDHUP applies only to

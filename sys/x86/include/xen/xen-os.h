@@ -49,18 +49,13 @@ extern int xen_disable_pv_disks;
 /* tunable for disabling PV nics */
 extern int xen_disable_pv_nics;
 
+extern uint32_t xen_cpuid_base;
+
 static inline bool
 xen_has_percpu_evtchn(void)
 {
 
 	return (!xen_hvm_domain() || xen_vector_callback_enabled);
-}
-
-static inline bool
-xen_pv_shutdown_handler(void)
-{
-
-	return (xen_pv_domain());
 }
 
 static inline bool
@@ -76,6 +71,8 @@ xen_pv_nics_disabled(void)
 
 	return (xen_hvm_domain() && xen_disable_pv_nics != 0);
 }
+
+bool xen_has_iommu_maps(void);
 
 #endif /* !__ASSEMBLY__ */
 

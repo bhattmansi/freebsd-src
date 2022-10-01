@@ -124,10 +124,16 @@ SYSCTL_INT(_hw_cxgbe, OID_AUTO, spg_len, CTLFLAG_RDTUN, &spg_len, 0,
  * -1: no congestion feedback (not recommended).
  *  0: backpressure the channel instead of dropping packets right away.
  *  1: no backpressure, drop packets for the congested queue immediately.
+ *  2: both backpressure and drop.
  */
 static int cong_drop = 0;
 SYSCTL_INT(_hw_cxgbe, OID_AUTO, cong_drop, CTLFLAG_RDTUN, &cong_drop, 0,
-    "Congestion control for RX queues (0 = backpressure, 1 = drop");
+    "Congestion control for NIC RX queues (0 = backpressure, 1 = drop, 2 = both");
+#ifdef TCP_OFFLOAD
+static int ofld_cong_drop = 0;
+SYSCTL_INT(_hw_cxgbe, OID_AUTO, ofld_cong_drop, CTLFLAG_RDTUN, &ofld_cong_drop, 0,
+    "Congestion control for TOE RX queues (0 = backpressure, 1 = drop, 2 = both");
+#endif
 
 /*
  * Deliver multiple frames in the same free list buffer if they fit.
@@ -236,7 +242,7 @@ static struct mbuf *get_fl_payload(struct adapter *, struct sge_fl *, uint32_t);
 static int eth_rx(struct adapter *, struct sge_rxq *, const struct iq_desc *,
     u_int);
 static inline void init_iq(struct sge_iq *, struct adapter *, int, int, int,
-    int, int);
+    int, int, int);
 static inline void init_fl(struct adapter *, struct sge_fl *, int, int, char *);
 static inline void init_eq(struct adapter *, struct sge_eq *, int, int, uint8_t,
     struct sge_iq *, char *);
@@ -554,11 +560,18 @@ t4_sge_modload(void)
 		spg_len = len;
 	}
 
-	if (cong_drop < -1 || cong_drop > 1) {
+	if (cong_drop < -1 || cong_drop > 2) {
 		printf("Invalid hw.cxgbe.cong_drop value (%d),"
 		    " using 0 instead.\n", cong_drop);
 		cong_drop = 0;
 	}
+#ifdef TCP_OFFLOAD
+	if (ofld_cong_drop < -1 || ofld_cong_drop > 2) {
+		printf("Invalid hw.cxgbe.ofld_cong_drop value (%d),"
+		    " using 0 instead.\n", ofld_cong_drop);
+		ofld_cong_drop = 0;
+	}
+#endif
 
 	if (tscale != 1 && (tscale < 3 || tscale > 17)) {
 		printf("Invalid hw.cxgbe.tscale value (%d),"
@@ -567,9 +580,7 @@ t4_sge_modload(void)
 	}
 
 	if (largest_rx_cluster != MCLBYTES &&
-#if MJUMPAGESIZE != MCLBYTES
 	    largest_rx_cluster != MJUMPAGESIZE &&
-#endif
 	    largest_rx_cluster != MJUM9BYTES &&
 	    largest_rx_cluster != MJUM16BYTES) {
 		printf("Invalid hw.cxgbe.largest_rx_cluster value (%d),"
@@ -578,9 +589,7 @@ t4_sge_modload(void)
 	}
 
 	if (safest_rx_cluster != MCLBYTES &&
-#if MJUMPAGESIZE != MCLBYTES
 	    safest_rx_cluster != MJUMPAGESIZE &&
-#endif
 	    safest_rx_cluster != MJUM9BYTES &&
 	    safest_rx_cluster != MJUM16BYTES) {
 		printf("Invalid hw.cxgbe.safest_rx_cluster value (%d),"
@@ -719,9 +728,7 @@ t4_tweak_chip_settings(struct adapter *sc)
 	uint16_t indsz = min(RX_COPY_THRESHOLD - 1, M_INDICATESIZE);
 	static int sw_buf_sizes[] = {
 		MCLBYTES,
-#if MJUMPAGESIZE != MCLBYTES
 		MJUMPAGESIZE,
-#endif
 		MJUM9BYTES,
 		MJUM16BYTES
 	};
@@ -858,9 +865,7 @@ t4_init_rx_buf_info(struct adapter *sc)
 	int i, j, n;
 	static int sw_buf_sizes[] = {	/* Sorted by size */
 		MCLBYTES,
-#if MJUMPAGESIZE != MCLBYTES
 		MJUMPAGESIZE,
-#endif
 		MJUM9BYTES,
 		MJUM16BYTES
 	};
@@ -1011,6 +1016,10 @@ t4_sge_sysctls(struct adapter *sc, struct sysctl_ctx_list *ctx,
 
 	SYSCTL_ADD_INT(ctx, children, OID_AUTO, "cong_drop", CTLFLAG_RD,
 	    NULL, cong_drop, "congestion drop setting");
+#ifdef TCP_OFFLOAD
+	SYSCTL_ADD_INT(ctx, children, OID_AUTO, "ofld_cong_drop", CTLFLAG_RD,
+	    NULL, ofld_cong_drop, "congestion drop setting");
+#endif
 
 	SYSCTL_ADD_INT(ctx, children, OID_AUTO, "fl_pack", CTLFLAG_RD,
 	    NULL, sp->pack_boundary, "payload pack boundary (bytes)");
@@ -1078,7 +1087,8 @@ t4_teardown_adapter_queues(struct adapter *sc)
 
 	ADAPTER_LOCK_ASSERT_NOTOWNED(sc);
 
-	if (!(sc->flags & IS_VF)) {
+	if (sc->sge.ctrlq != NULL) {
+		MPASS(!(sc->flags & IS_VF));	/* VFs don't allocate ctrlq. */
 		for_each_port(sc, i)
 			free_ctrlq(sc, i);
 	}
@@ -1303,7 +1313,7 @@ t4_intr_err(void *arg)
 	uint32_t v;
 	const bool verbose = (sc->debug_flags & DF_VERBOSE_SLOWINTR) != 0;
 
-	if (sc->flags & ADAP_ERR)
+	if (atomic_load_int(&sc->error_flags) & ADAP_FATAL_ERR)
 		return;
 
 	v = t4_read_reg(sc, MYPF_REG(A_PL_PF_INT_CAUSE));
@@ -1312,7 +1322,8 @@ t4_intr_err(void *arg)
 		t4_write_reg(sc, MYPF_REG(A_PL_PF_INT_CAUSE), v);
 	}
 
-	t4_slow_intr_handler(sc, verbose);
+	if (t4_slow_intr_handler(sc, verbose))
+		t4_fatal_err(sc, false);
 }
 
 /*
@@ -1509,15 +1520,43 @@ sort_before_lro(struct lro_ctrl *lro)
 }
 #endif
 
-static inline uint64_t
-last_flit_to_ns(struct adapter *sc, uint64_t lf)
-{
-	uint64_t n = be64toh(lf) & 0xfffffffffffffff;	/* 60b, not 64b. */
+#define CGBE_SHIFT_SCALE 10
 
-	if (n > UINT64_MAX / 1000000)
-		return (n / sc->params.vpd.cclk * 1000000);
-	else
-		return (n * 1000000 / sc->params.vpd.cclk);
+static inline uint64_t
+t4_tstmp_to_ns(struct adapter *sc, uint64_t lf)
+{
+	struct clock_sync *cur, dcur;
+	uint64_t hw_clocks;
+	uint64_t hw_clk_div;
+	sbintime_t sbt_cur_to_prev, sbt;
+	uint64_t hw_tstmp = lf & 0xfffffffffffffffULL;	/* 60b, not 64b. */
+	seqc_t gen;
+
+	for (;;) {
+		cur = &sc->cal_info[sc->cal_current];
+		gen = seqc_read(&cur->gen);
+		if (gen == 0)
+			return (0);
+		dcur = *cur;
+		if (seqc_consistent(&cur->gen, gen))
+			break;
+	}
+
+	/*
+	 * Our goal here is to have a result that is:
+	 *
+	 * (                             (cur_time - prev_time)   )
+	 * ((hw_tstmp - hw_prev) *  ----------------------------- ) + prev_time
+	 * (                             (hw_cur - hw_prev)       )
+	 *
+	 * With the constraints that we cannot use float and we
+	 * don't want to overflow the uint64_t numbers we are using.
+	 */
+	hw_clocks = hw_tstmp - dcur.hw_prev;
+	sbt_cur_to_prev = (dcur.sbt_cur - dcur.sbt_prev);
+	hw_clk_div = dcur.hw_cur - dcur.hw_prev;
+	sbt = hw_clocks * sbt_cur_to_prev / hw_clk_div + dcur.sbt_prev;
+	return (sbttons(sbt));
 }
 
 static inline void
@@ -2066,17 +2105,13 @@ have_mbuf:
 
 	if (rxq->iq.flags & IQ_RX_TIMESTAMP) {
 		/*
-		 * Fill up rcv_tstmp but do not set M_TSTMP.
-		 * rcv_tstmp is not in the format that the
-		 * kernel expects and we don't want to mislead
-		 * it.  For now this is only for custom code
-		 * that knows how to interpret cxgbe's stamp.
+		 * Fill up rcv_tstmp but do not set M_TSTMP as
+		 * long as we get a non-zero back from t4_tstmp_to_ns().
 		 */
-		m0->m_pkthdr.rcv_tstmp =
-		    last_flit_to_ns(sc, d->rsp.u.last_flit);
-#ifdef notyet
-		m0->m_flags |= M_TSTMP;
-#endif
+		m0->m_pkthdr.rcv_tstmp = t4_tstmp_to_ns(sc,
+		    be64toh(d->rsp.u.last_flit));
+		if (m0->m_pkthdr.rcv_tstmp != 0)
+			m0->m_flags |= M_TSTMP;
 	}
 
 #ifdef NUMA
@@ -2512,6 +2547,7 @@ needs_vlan_insertion(struct mbuf *m)
 	return (m->m_flags & M_VLANTAG);
 }
 
+#if defined(INET) || defined(INET6)
 static void *
 m_advance(struct mbuf **pm, int *poffset, int len)
 {
@@ -2536,6 +2572,7 @@ m_advance(struct mbuf **pm, int *poffset, int len)
 	*pm = m;
 	return ((void *)p);
 }
+#endif
 
 static inline int
 count_mbuf_ext_pgs(struct mbuf *m, int skip, vm_paddr_t *nextaddr)
@@ -2678,10 +2715,13 @@ int
 parse_pkt(struct mbuf **mp, bool vm_wr)
 {
 	struct mbuf *m0 = *mp, *m;
-	int rc, nsegs, defragged = 0, offset;
+	int rc, nsegs, defragged = 0;
 	struct ether_header *eh;
+#ifdef INET
 	void *l3hdr;
+#endif
 #if defined(INET) || defined(INET6)
+	int offset;
 	struct tcphdr *tcp;
 #endif
 #if defined(KERN_TLS) || defined(RATELIMIT)
@@ -2789,8 +2829,14 @@ restart:
 	} else
 		m0->m_pkthdr.l2hlen = sizeof(*eh);
 
+#if defined(INET) || defined(INET6)
 	offset = 0;
+#ifdef INET
 	l3hdr = m_advance(&m, &offset, m0->m_pkthdr.l2hlen);
+#else
+	m_advance(&m, &offset, m0->m_pkthdr.l2hlen);
+#endif
+#endif
 
 	switch (eh_type) {
 #ifdef INET6
@@ -2830,6 +2876,7 @@ restart:
 		goto fail;
 	}
 
+#if defined(INET) || defined(INET6)
 	if (needs_vxlan_csum(m0)) {
 		m0->m_pkthdr.l4hlen = sizeof(struct udphdr);
 		m0->m_pkthdr.l5hlen = sizeof(struct vxlan_header);
@@ -2845,7 +2892,11 @@ restart:
 			m0->m_pkthdr.inner_l2hlen = sizeof(*evh);
 		} else
 			m0->m_pkthdr.inner_l2hlen = sizeof(*eh);
+#ifdef INET
 		l3hdr = m_advance(&m, &offset, m0->m_pkthdr.inner_l2hlen);
+#else
+		m_advance(&m, &offset, m0->m_pkthdr.inner_l2hlen);
+#endif
 
 		switch (eh_type) {
 #ifdef INET6
@@ -2873,12 +2924,10 @@ restart:
 			rc = EINVAL;
 			goto fail;
 		}
-#if defined(INET) || defined(INET6)
 		if (needs_inner_tcp_csum(m0)) {
 			tcp = m_advance(&m, &offset, m0->m_pkthdr.inner_l3hlen);
 			m0->m_pkthdr.inner_l4hlen = tcp->th_off * 4;
 		}
-#endif
 		MPASS((m0->m_pkthdr.csum_flags & CSUM_SND_TAG) == 0);
 		m0->m_pkthdr.csum_flags &= CSUM_INNER_IP6_UDP |
 		    CSUM_INNER_IP6_TCP | CSUM_INNER_IP6_TSO | CSUM_INNER_IP |
@@ -2886,7 +2935,6 @@ restart:
 		    CSUM_ENCAP_VXLAN;
 	}
 
-#if defined(INET) || defined(INET6)
 	if (needs_outer_tcp_csum(m0)) {
 		tcp = m_advance(&m, &offset, m0->m_pkthdr.l3hlen);
 		m0->m_pkthdr.l4hlen = tcp->th_off * 4;
@@ -3350,7 +3398,7 @@ send_txpkts:
 
 static inline void
 init_iq(struct sge_iq *iq, struct adapter *sc, int tmr_idx, int pktc_idx,
-    int qsize, int intr_idx, int cong)
+    int qsize, int intr_idx, int cong, int qtype)
 {
 
 	KASSERT(tmr_idx >= 0 && tmr_idx < SGE_NTIMERS,
@@ -3359,10 +3407,13 @@ init_iq(struct sge_iq *iq, struct adapter *sc, int tmr_idx, int pktc_idx,
 	    ("%s: bad pktc_idx %d", __func__, pktc_idx));
 	KASSERT(intr_idx >= -1 && intr_idx < sc->intr_count,
 	    ("%s: bad intr_idx %d", __func__, intr_idx));
+	KASSERT(qtype == FW_IQ_IQTYPE_OTHER || qtype == FW_IQ_IQTYPE_NIC ||
+	    qtype == FW_IQ_IQTYPE_OFLD, ("%s: bad qtype %d", __func__, qtype));
 
 	iq->flags = 0;
 	iq->state = IQS_DISABLED;
 	iq->adapter = sc;
+	iq->qtype = qtype;
 	iq->intr_params = V_QINTR_TIMER_IDX(tmr_idx);
 	iq->intr_pktc_idx = SGE_NCOUNTERS - 1;
 	if (pktc_idx >= 0) {
@@ -3372,7 +3423,7 @@ init_iq(struct sge_iq *iq, struct adapter *sc, int tmr_idx, int pktc_idx,
 	iq->qsize = roundup2(qsize, 16);	/* See FW_IQ_CMD/iqsize */
 	iq->sidx = iq->qsize - sc->params.sge.spg_len / IQ_ESIZE;
 	iq->intr_idx = intr_idx;
-	iq->cong = cong;
+	iq->cong_drop = cong;
 }
 
 static inline void
@@ -3538,9 +3589,10 @@ free_iq_fl(struct adapter *sc, struct sge_iq *iq, struct sge_fl *fl)
 static int
 alloc_iq_fl_hwq(struct vi_info *vi, struct sge_iq *iq, struct sge_fl *fl)
 {
-	int rc, i, cntxt_id;
+	int rc, cntxt_id, cong_map;
 	struct fw_iq_cmd c;
 	struct adapter *sc = vi->adapter;
+	struct port_info *pi = vi->pi;
 	__be32 v = 0;
 
 	MPASS (!(iq->flags & IQ_HW_ALLOCATED));
@@ -3572,14 +3624,17 @@ alloc_iq_fl_hwq(struct vi_info *vi, struct sge_iq *iq, struct sge_fl *fl)
 	    V_FW_IQ_CMD_TYPE(FW_IQ_TYPE_FL_INT_CAP) |
 	    V_FW_IQ_CMD_VIID(vi->viid) |
 	    V_FW_IQ_CMD_IQANUD(X_UPDATEDELIVERY_INTERRUPT));
-	c.iqdroprss_to_iqesize = htobe16(V_FW_IQ_CMD_IQPCIECH(vi->pi->tx_chan) |
+	c.iqdroprss_to_iqesize = htobe16(V_FW_IQ_CMD_IQPCIECH(pi->tx_chan) |
 	    F_FW_IQ_CMD_IQGTSMODE |
 	    V_FW_IQ_CMD_IQINTCNTTHRESH(iq->intr_pktc_idx) |
 	    V_FW_IQ_CMD_IQESIZE(ilog2(IQ_ESIZE) - 4));
 	c.iqsize = htobe16(iq->qsize);
 	c.iqaddr = htobe64(iq->ba);
-	if (iq->cong >= 0)
-		c.iqns_to_fl0congen = htobe32(F_FW_IQ_CMD_IQFLINTCONGEN);
+	c.iqns_to_fl0congen = htobe32(V_FW_IQ_CMD_IQTYPE(iq->qtype));
+	if (iq->cong_drop != -1) {
+		cong_map = iq->qtype == IQ_ETH ? pi->rx_e_chan_map : 0;
+		c.iqns_to_fl0congen |= htobe32(F_FW_IQ_CMD_IQFLINTCONGEN);
+	}
 
 	if (fl) {
 		bzero(fl->desc, fl->sidx * EQ_ESIZE + sc->params.sge.spg_len);
@@ -3589,9 +3644,9 @@ alloc_iq_fl_hwq(struct vi_info *vi, struct sge_iq *iq, struct sge_fl *fl)
 			(fl_pad ? F_FW_IQ_CMD_FL0PADEN : 0) |
 			(fl->flags & FL_BUF_PACKING ? F_FW_IQ_CMD_FL0PACKEN :
 			    0));
-		if (iq->cong >= 0) {
+		if (iq->cong_drop != -1) {
 			c.iqns_to_fl0congen |=
-				htobe32(V_FW_IQ_CMD_FL0CNGCHMAP(iq->cong) |
+				htobe32(V_FW_IQ_CMD_FL0CNGCHMAP(cong_map) |
 				    F_FW_IQ_CMD_FL0CONGCIF |
 				    F_FW_IQ_CMD_FL0CONGEN);
 		}
@@ -3625,6 +3680,8 @@ alloc_iq_fl_hwq(struct vi_info *vi, struct sge_iq *iq, struct sge_fl *fl)
 	if (fl) {
 		u_int qid;
 #ifdef INVARIANTS
+		int i;
+
 		MPASS(!(fl->flags & FL_BUF_RESUME));
 		for (i = 0; i < fl->sidx * 8; i++)
 			MPASS(fl->sdesc[i].cl == NULL);
@@ -3664,28 +3721,10 @@ alloc_iq_fl_hwq(struct vi_info *vi, struct sge_iq *iq, struct sge_fl *fl)
 		FL_UNLOCK(fl);
 	}
 
-	if (chip_id(sc) >= CHELSIO_T5 && !(sc->flags & IS_VF) && iq->cong >= 0) {
-		uint32_t param, val;
-
-		param = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DMAQ) |
-		    V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DMAQ_CONM_CTXT) |
-		    V_FW_PARAMS_PARAM_YZ(iq->cntxt_id);
-		if (iq->cong == 0)
-			val = 1 << 19;
-		else {
-			val = 2 << 19;
-			for (i = 0; i < 4; i++) {
-				if (iq->cong & (1 << i))
-					val |= 1 << (i << 2);
-			}
-		}
-
-		rc = -t4_set_params(sc, sc->mbox, sc->pf, 0, 1, &param, &val);
-		if (rc != 0) {
-			/* report error but carry on */
-			CH_ERR(sc, "failed to set congestion manager context "
-			    "for ingress queue %d: %d\n", iq->cntxt_id, rc);
-		}
+	if (chip_id(sc) >= CHELSIO_T5 && !(sc->flags & IS_VF) &&
+	    iq->cong_drop != -1) {
+		t4_sge_set_conm_context(sc, iq->cntxt_id, iq->cong_drop,
+		    cong_map);
 	}
 
 	/* Enable IQ interrupts */
@@ -3795,7 +3834,7 @@ alloc_fwq(struct adapter *sc)
 			intr_idx = 0;
 		else
 			intr_idx = sc->intr_count > 1 ? 1 : 0;
-		init_iq(fwq, sc, 0, 0, FW_IQ_QSIZE, intr_idx, -1);
+		init_iq(fwq, sc, 0, 0, FW_IQ_QSIZE, intr_idx, -1, IQ_OTHER);
 		rc = alloc_iq_fl(vi, fwq, NULL, &sc->ctx, sc->fwq_oid);
 		if (rc != 0) {
 			CH_ERR(sc, "failed to allocate fwq: %d\n", rc);
@@ -3909,15 +3948,57 @@ free_ctrlq(struct adapter *sc, int idx)
 }
 
 int
-tnl_cong(struct port_info *pi, int drop)
+t4_sge_set_conm_context(struct adapter *sc, int cntxt_id, int cong_drop,
+    int cong_map)
 {
+	const int cng_ch_bits_log = sc->chip_params->cng_ch_bits_log;
+	uint32_t param, val;
+	uint16_t ch_map;
+	int cong_mode, rc, i;
 
-	if (drop == -1)
-		return (-1);
-	else if (drop == 1)
-		return (0);
-	else
-		return (pi->rx_e_chan_map);
+	if (chip_id(sc) < CHELSIO_T5)
+		return (ENOTSUP);
+
+	/* Convert the driver knob to the mode understood by the firmware. */
+	switch (cong_drop) {
+	case -1:
+		cong_mode = X_CONMCTXT_CNGTPMODE_DISABLE;
+		break;
+	case 0:
+		cong_mode = X_CONMCTXT_CNGTPMODE_CHANNEL;
+		break;
+	case 1:
+		cong_mode = X_CONMCTXT_CNGTPMODE_QUEUE;
+		break;
+	case 2:
+		cong_mode = X_CONMCTXT_CNGTPMODE_BOTH;
+		break;
+	default:
+		MPASS(0);
+		CH_ERR(sc, "cong_drop = %d is invalid (ingress queue %d).\n",
+		    cong_drop, cntxt_id);
+		return (EINVAL);
+	}
+
+	param = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DMAQ) |
+	    V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DMAQ_CONM_CTXT) |
+	    V_FW_PARAMS_PARAM_YZ(cntxt_id);
+	val = V_CONMCTXT_CNGTPMODE(cong_mode);
+	if (cong_mode == X_CONMCTXT_CNGTPMODE_CHANNEL ||
+	    cong_mode == X_CONMCTXT_CNGTPMODE_BOTH) {
+		for (i = 0, ch_map = 0; i < 4; i++) {
+			if (cong_map & (1 << i))
+				ch_map |= 1 << (i << cng_ch_bits_log);
+		}
+		val |= V_CONMCTXT_CNGCHMAP(ch_map);
+	}
+	rc = -t4_set_params(sc, sc->mbox, sc->pf, 0, 1, &param, &val);
+	if (rc != 0) {
+		CH_ERR(sc, "failed to set congestion manager context "
+		    "for ingress queue %d: %d\n", cntxt_id, rc);
+	}
+
+	return (rc);
 }
 
 /*
@@ -3949,7 +4030,7 @@ alloc_rxq(struct vi_info *vi, struct sge_rxq *rxq, int idx, int intr_idx,
 		    "rx queue");
 
 		init_iq(&rxq->iq, sc, vi->tmr_idx, vi->pktc_idx, vi->qsize_rxq,
-		    intr_idx, tnl_cong(vi->pi, cong_drop));
+		    intr_idx, cong_drop, IQ_ETH);
 #if defined(INET) || defined(INET6)
 		if (ifp->if_capenable & IFCAP_LRO)
 			rxq->iq.flags |= IQ_LRO_ENABLED;
@@ -4072,7 +4153,7 @@ alloc_ofld_rxq(struct vi_info *vi, struct sge_ofld_rxq *ofld_rxq, int idx,
 		    CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, "offload rx queue");
 
 		init_iq(&ofld_rxq->iq, sc, vi->ofld_tmr_idx, vi->ofld_pktc_idx,
-		    vi->qsize_rxq, intr_idx, 0);
+		    vi->qsize_rxq, intr_idx, ofld_cong_drop, IQ_OFLD);
 		snprintf(name, sizeof(name), "%s ofld_rxq%d-fl",
 		    device_get_nameunit(vi->dev), idx);
 		init_fl(sc, &ofld_rxq->fl, vi->qsize_rxq / 8, maxp, name);
@@ -5384,14 +5465,13 @@ write_txpkt_vm_wr(struct adapter *sc, struct sge_txq *txq, struct mbuf *m0)
 	struct cpl_tx_pkt_core *cpl;
 	uint32_t ctrl;	/* used in many unrelated places */
 	uint64_t ctrl1;
-	int len16, ndesc, pktlen, nsegs;
+	int len16, ndesc, pktlen;
 	caddr_t dst;
 
 	TXQ_LOCK_ASSERT_OWNED(txq);
 	M_ASSERTPKTHDR(m0);
 
 	len16 = mbuf_len16(m0);
-	nsegs = mbuf_nsegs(m0);
 	pktlen = m0->m_pkthdr.len;
 	ctrl = sizeof(struct cpl_tx_pkt_core);
 	if (needs_tso(m0))
@@ -6566,7 +6646,6 @@ write_ethofld_wr(struct cxgbe_rate_tag *cst, struct fw_eth_tx_eo_wr *wr,
 	uint64_t ctrl1;
 	uint32_t ctrl;	/* used in many unrelated places */
 	int len16, pktlen, nsegs, immhdrs;
-	caddr_t dst;
 	uintptr_t p;
 	struct ulptx_sgl *usgl;
 	struct sglist sg;
@@ -6661,7 +6740,6 @@ write_ethofld_wr(struct cxgbe_rate_tag *cst, struct fw_eth_tx_eo_wr *wr,
 	m_copydata(m0, 0, immhdrs, (void *)p);
 
 	/* SGL */
-	dst = (void *)(cpl + 1);
 	if (nsegs > 0) {
 		int i, pad;
 

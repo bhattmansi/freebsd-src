@@ -86,11 +86,13 @@ int	ffs_isblock(struct fs *, u_char *, ufs1_daddr_t);
 int	ffs_isfreeblock(struct fs *, u_char *, ufs1_daddr_t);
 void	ffs_oldfscompat_write(struct fs *, struct ufsmount *);
 int	ffs_own_mount(const struct mount *mp);
+int	ffs_sbsearch(void *, struct fs **, int, struct malloc_type *,
+	    int (*)(void *, off_t, void **, int));
 int	ffs_reallocblks(struct vop_reallocblks_args *);
 int	ffs_realloccg(struct inode *, ufs2_daddr_t, ufs2_daddr_t,
 	    ufs2_daddr_t, int, int, int, struct ucred *, struct buf **);
 int	ffs_reload(struct mount *, int);
-int	ffs_sbget(void *, struct fs **, off_t, struct malloc_type *,
+int	ffs_sbget(void *, struct fs **, off_t, int, struct malloc_type *,
 	    int (*)(void *, off_t, void **, int));
 int	ffs_sbput(void *, struct fs *, off_t, int (*)(void *, off_t, void *,
 	    int));
@@ -130,18 +132,13 @@ int	ffs_breadz(struct ufsmount *, struct vnode *, daddr_t, daddr_t, int,
 					   doomed */
 #define	FFSV_FORCEINODEDEP	0x0008	/* Force allocation of inodedep, ignore
 					   MNT_SOFTDEP */
+#define	FFSV_NEWINODE		0x0010	/* Newly allocated inode */
 
 /*
  * Flags to ffs_reload
  */
 #define	FFSR_FORCE	0x0001
 #define	FFSR_UNSUSPEND	0x0002
-
-/*
- * Request standard superblock location in ffs_sbget
- */
-#define	STDSB			-1	/* Fail if check-hash is bad */
-#define	STDSB_NOHASHFAIL	-2	/* Ignore check-hash failure */
 
 /*
  * Definitions for TRIM interface

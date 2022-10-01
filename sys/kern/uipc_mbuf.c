@@ -50,6 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/protosw.h>
 #include <sys/uio.h>
 #include <sys/vmmeter.h>
+#include <sys/sbuf.h>
 #include <sys/sdt.h>
 #include <vm/vm.h>
 #include <vm/vm_pageout.h>
@@ -116,30 +117,56 @@ SDT_PROBE_DEFINE1_XLATE(sdt, , , m__freem,
 
 #include <security/mac/mac_framework.h>
 
-int	max_linkhdr;
-int	max_protohdr;
-int	max_hdr;
-int	max_datalen;
+/*
+ * Provide minimum possible defaults for link and protocol header space,
+ * assuming IPv4 over Ethernet.  Enabling IPv6, IEEE802.11 or some other
+ * protocol may grow these values.
+ */
+u_int	max_linkhdr = 16;
+u_int	max_protohdr = 40;
+u_int	max_hdr = 16 + 40;
+SYSCTL_INT(_kern_ipc, KIPC_MAX_LINKHDR, max_linkhdr, CTLFLAG_RD,
+	   &max_linkhdr, 16, "Size of largest link layer header");
+SYSCTL_INT(_kern_ipc, KIPC_MAX_PROTOHDR, max_protohdr, CTLFLAG_RD,
+	   &max_protohdr, 40, "Size of largest protocol layer header");
+SYSCTL_INT(_kern_ipc, KIPC_MAX_HDR, max_hdr, CTLFLAG_RD,
+	   &max_hdr, 16 + 40, "Size of largest link plus protocol header");
+
+static void
+max_hdr_grow(void)
+{
+
+	max_hdr = max_linkhdr + max_protohdr;
+	MPASS(max_hdr <= MHLEN);
+}
+
+void
+max_linkhdr_grow(u_int new)
+{
+
+	if (new > max_linkhdr) {
+		max_linkhdr = new;
+		max_hdr_grow();
+	}
+}
+
+void
+max_protohdr_grow(u_int new)
+{
+
+	if (new > max_protohdr) {
+		max_protohdr = new;
+		max_hdr_grow();
+	}
+}
+
 #ifdef MBUF_STRESS_TEST
 int	m_defragpackets;
 int	m_defragbytes;
 int	m_defraguseless;
 int	m_defragfailure;
 int	m_defragrandomfailures;
-#endif
 
-/*
- * sysctl(8) exported objects
- */
-SYSCTL_INT(_kern_ipc, KIPC_MAX_LINKHDR, max_linkhdr, CTLFLAG_RD,
-	   &max_linkhdr, 0, "Size of largest link layer header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_PROTOHDR, max_protohdr, CTLFLAG_RD,
-	   &max_protohdr, 0, "Size of largest protocol layer header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_HDR, max_hdr, CTLFLAG_RD,
-	   &max_hdr, 0, "Size of largest link plus protocol header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_DATALEN, max_datalen, CTLFLAG_RD,
-	   &max_datalen, 0, "Minimum space left in mbuf after max_hdr");
-#ifdef MBUF_STRESS_TEST
 SYSCTL_INT(_kern_ipc, OID_AUTO, m_defragpackets, CTLFLAG_RD,
 	   &m_defragpackets, 0, "");
 SYSCTL_INT(_kern_ipc, OID_AUTO, m_defragbytes, CTLFLAG_RD,
@@ -179,16 +206,16 @@ CTASSERT(offsetof(struct mbuf, m_pktdat) % 8 == 0);
  */
 #if defined(__LP64__)
 CTASSERT(offsetof(struct mbuf, m_dat) == 32);
-CTASSERT(sizeof(struct pkthdr) == 56);
+CTASSERT(sizeof(struct pkthdr) == 64);
 CTASSERT(sizeof(struct m_ext) == 160);
 #else
 CTASSERT(offsetof(struct mbuf, m_dat) == 24);
-CTASSERT(sizeof(struct pkthdr) == 48);
+CTASSERT(sizeof(struct pkthdr) == 56);
 #if defined(__powerpc__) && defined(BOOKE)
 /* PowerPC booke has 64-bit physical pointers. */
-CTASSERT(sizeof(struct m_ext) == 184);
+CTASSERT(sizeof(struct m_ext) == 176);
 #else
-CTASSERT(sizeof(struct m_ext) == 180);
+CTASSERT(sizeof(struct m_ext) == 172);
 #endif
 #endif
 
@@ -262,6 +289,7 @@ m_demote_pkthdr(struct mbuf *m)
 {
 
 	M_ASSERTPKTHDR(m);
+	M_ASSERT_NO_SND_TAG(m);
 
 	m_tag_delete_chain(m, NULL);
 	m->m_flags &= ~M_PKTHDR;
@@ -278,13 +306,14 @@ m_demote(struct mbuf *m0, int all, int flags)
 {
 	struct mbuf *m;
 
+	flags |= M_DEMOTEFLAGS;
+
 	for (m = all ? m0 : m0->m_next; m != NULL; m = m->m_next) {
 		KASSERT(m->m_nextpkt == NULL, ("%s: m_nextpkt in m %p, m0 %p",
 		    __func__, m, m0));
 		if (m->m_flags & M_PKTHDR)
 			m_demote_pkthdr(m);
-		m->m_flags = m->m_flags & (M_EXT | M_RDONLY | M_NOFREE |
-		    M_EXTPG | flags);
+		m->m_flags &= flags;
 	}
 }
 
@@ -624,7 +653,7 @@ m_copyfromunmapped(const struct mbuf *m, int off, int len, caddr_t cp)
 {
 	struct iovec iov;
 	struct uio uio;
-	int error;
+	int error __diagused;
 
 	KASSERT(off >= 0, ("m_copyfromunmapped: negative off %d", off));
 	KASSERT(len >= 0, ("m_copyfromunmapped: negative len %d", len));
@@ -1154,7 +1183,7 @@ m_copytounmapped(const struct mbuf *m, int off, int len, c_caddr_t cp)
 {
 	struct iovec iov;
 	struct uio uio;
-	int error;
+	int error __diagused;
 
 	KASSERT(off >= 0, ("m_copytounmapped: negative off %d", off));
 	KASSERT(len >= 0, ("m_copytounmapped: negative len %d", len));
@@ -1300,7 +1329,7 @@ m_apply_extpg_one(struct mbuf *m, int off, int len,
 		pglen = m_epg_pagelen(m, i, pgoff);
 		if (off < pglen) {
 			count = min(pglen - off, len);
-			p = (void *)PHYS_TO_DMAP(m->m_epg_pa[i] + pgoff);
+			p = (void *)PHYS_TO_DMAP(m->m_epg_pa[i] + pgoff + off);
 			rval = f(arg, p, count);
 			if (rval)
 				return (rval);
@@ -1767,8 +1796,7 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 	vm_page_t pg_array[MBUF_PEXT_MAX_PGS];
 	int error, length, i, needed;
 	ssize_t total;
-	int pflags = malloc2vm_flags(how) | VM_ALLOC_NOOBJ | VM_ALLOC_NODUMP |
-	    VM_ALLOC_WIRED;
+	int pflags = malloc2vm_flags(how) | VM_ALLOC_NODUMP | VM_ALLOC_WIRED;
 
 	MPASS((flags & M_PKTHDR) == 0);
 	MPASS((how & M_ZERO) == 0);
@@ -1816,7 +1844,7 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 		needed = length = MIN(maxseg, total);
 		for (i = 0; needed > 0; i++, needed -= PAGE_SIZE) {
 retry_page:
-			pg_array[i] = vm_page_alloc(NULL, 0, pflags);
+			pg_array[i] = vm_page_alloc_noobj(pflags);
 			if (pg_array[i] == NULL) {
 				if (how & M_NOWAIT) {
 					goto failed;
@@ -1897,8 +1925,12 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 
 		mb->m_len = length;
 		progress += length;
-		if (flags & M_PKTHDR)
+		if (flags & M_PKTHDR) {
 			m->m_pkthdr.len += length;
+			m->m_pkthdr.memlen += MSIZE;
+			if (mb->m_flags & M_EXT)
+				m->m_pkthdr.memlen += mb->m_ext.ext_size;
+		}
 	}
 	KASSERT(progress == total, ("%s: progress != total", __func__));
 
@@ -2128,16 +2160,6 @@ struct mbufprofile {
 	uintmax_t segments[MP_BUCKETS];
 } mbprof;
 
-#define MP_MAXDIGITS 21	/* strlen("16,000,000,000,000,000,000") == 21 */
-#define MP_NUMLINES 6
-#define MP_NUMSPERLINE 16
-#define MP_EXTRABYTES 64	/* > strlen("used:\nwasted:\nsegments:\n") */
-/* work out max space needed and add a bit of spare space too */
-#define MP_MAXLINE ((MP_MAXDIGITS+1) * MP_NUMSPERLINE)
-#define MP_BUFSIZE ((MP_MAXLINE * MP_NUMLINES) + 1 + MP_EXTRABYTES)
-
-char mbprofbuf[MP_BUFSIZE];
-
 void
 m_profile(struct mbuf *m)
 {
@@ -2173,16 +2195,18 @@ m_profile(struct mbuf *m)
 	mbprof.wasted[fls(wasted)]++;
 }
 
-static void
-mbprof_textify(void)
+static int
+mbprof_handler(SYSCTL_HANDLER_ARGS)
 {
-	int offset;
-	char *c;
+	char buf[256];
+	struct sbuf sb;
+	int error;
 	uint64_t *p;
 
+	sbuf_new_for_sysctl(&sb, buf, sizeof(buf), req);
+
 	p = &mbprof.wasted[0];
-	c = mbprofbuf;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "wasted:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2190,16 +2214,14 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.wasted[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
 	p = &mbprof.used[0];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "used:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2207,16 +2229,14 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.used[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
 	p = &mbprof.segments[0];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "segments:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2224,22 +2244,15 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.segments[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %jju",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
-}
 
-static int
-mbprof_handler(SYSCTL_HANDLER_ARGS)
-{
-	int error;
-
-	mbprof_textify();
-	error = SYSCTL_OUT(req, mbprofbuf, strlen(mbprofbuf) + 1);
+	error = sbuf_finish(&sb);
+	sbuf_delete(&sb);
 	return (error);
 }
 
@@ -2261,12 +2274,12 @@ mbprof_clr_handler(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, mbufprofile,
-    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     mbprof_handler, "A",
     "mbuf profiling statistics");
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, mbufprofileclr,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     mbprof_clr_handler, "I",
     "clear mbuf profiling statistics");
 #endif

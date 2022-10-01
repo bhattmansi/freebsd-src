@@ -125,6 +125,7 @@ static void	shm_init(void *arg);
 static void	shm_insert(char *path, Fnv32_t fnv, struct shmfd *shmfd);
 static struct shmfd *shm_lookup(char *path, Fnv32_t fnv);
 static int	shm_remove(char *path, Fnv32_t fnv, struct ucred *ucred);
+static void	shm_doremove(struct shm_mapping *map);
 static int	shm_dotruncate_cookie(struct shmfd *shmfd, off_t length,
     void *rl_cookie);
 static int	shm_dotruncate_locked(struct shmfd *shmfd, off_t length,
@@ -267,7 +268,7 @@ static int
 shm_largepage_phys_populate(vm_object_t object, vm_pindex_t pidx,
     int fault_type, vm_prot_t max_prot, vm_pindex_t *first, vm_pindex_t *last)
 {
-	vm_page_t m;
+	vm_page_t m __diagused;
 	int psind;
 
 	psind = object->un_pager.phys.data_val;
@@ -751,7 +752,8 @@ shm_dotruncate_largepage(struct shmfd *shmfd, off_t length, void *rl_cookie)
 {
 	vm_object_t object;
 	vm_page_t m;
-	vm_pindex_t newobjsz, oldobjsz;
+	vm_pindex_t newobjsz;
+	vm_pindex_t oldobjsz __unused;
 	int aflags, error, i, psind, try;
 
 	KASSERT(length >= 0, ("shm_dotruncate: length < 0"));
@@ -982,6 +984,26 @@ shm_init(void *arg)
 SYSINIT(shm_init, SI_SUB_SYSV_SHM, SI_ORDER_ANY, shm_init, NULL);
 
 /*
+ * Remove all shared memory objects that belong to a prison.
+ */
+void
+shm_remove_prison(struct prison *pr)
+{
+	struct shm_mapping *shmm, *tshmm;
+	u_long i;
+
+	sx_xlock(&shm_dict_lock);
+	for (i = 0; i < shm_hash + 1; i++) {
+		LIST_FOREACH_SAFE(shmm, &shm_dictionary[i], sm_link, tshmm) {
+			if (shmm->sm_shmfd->shm_object->cred &&
+			    shmm->sm_shmfd->shm_object->cred->cr_prison == pr)
+				shm_doremove(shmm);
+		}
+	}
+	sx_xunlock(&shm_dict_lock);
+}
+
+/*
  * Dictionary management.  We maintain an in-kernel dictionary to map
  * paths to shmfd objects.  We use the FNV hash on the path to store
  * the mappings in a hash table.
@@ -1033,16 +1055,22 @@ shm_remove(char *path, Fnv32_t fnv, struct ucred *ucred)
 			    FREAD | FWRITE);
 			if (error)
 				return (error);
-			map->sm_shmfd->shm_path = NULL;
-			LIST_REMOVE(map, sm_link);
-			shm_drop(map->sm_shmfd);
-			free(map->sm_path, M_SHMFD);
-			free(map, M_SHMFD);
+			shm_doremove(map);
 			return (0);
 		}
 	}
 
 	return (ENOENT);
+}
+
+static void
+shm_doremove(struct shm_mapping *map)
+{
+	map->sm_shmfd->shm_path = NULL;
+	LIST_REMOVE(map, sm_link);
+	shm_drop(map->sm_shmfd);
+	free(map->sm_path, M_SHMFD);
+	free(map, M_SHMFD);
 }
 
 int
@@ -1962,15 +1990,15 @@ shm_fspacectl(struct file *fp, int cmd, off_t *offset, off_t *length, int flags,
 	off_t off, len;
 	int error;
 
-	/* This assumes that the caller already checked for overflow. */
+	KASSERT(cmd == SPACECTL_DEALLOC, ("shm_fspacectl: Invalid cmd"));
+	KASSERT((flags & ~SPACECTL_F_SUPPORTED) == 0,
+	    ("shm_fspacectl: non-zero flags"));
+	KASSERT(*offset >= 0 && *length > 0 && *length <= OFF_MAX - *offset,
+	    ("shm_fspacectl: offset/length overflow or underflow"));
 	error = EINVAL;
 	shmfd = fp->f_data;
 	off = *offset;
 	len = *length;
-
-	if (cmd != SPACECTL_DEALLOC || off < 0 || len <= 0 ||
-	    len > OFF_MAX - off || flags != 0)
-		return (EINVAL);
 
 	rl_cookie = rangelock_wlock(&shmfd->shm_rl, off, off + len,
 	    &shmfd->shm_mtx);
@@ -2032,12 +2060,10 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
 	struct sbuf sb;
 	struct kinfo_file kif;
 	u_long i;
-	ssize_t curlen;
 	int error, error2;
 
 	sbuf_new_for_sysctl(&sb, NULL, sizeof(struct kinfo_file) * 5, req);
 	sbuf_clear_flags(&sb, SBUF_INCLUDENUL);
-	curlen = 0;
 	error = 0;
 	sx_slock(&shm_dict_lock);
 	for (i = 0; i < shm_hash + 1; i++) {
@@ -2051,14 +2077,10 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
 			if (error != 0)
 				break;
 			pack_kinfo(&kif);
-			if (req->oldptr != NULL &&
-			    kif.kf_structsize + curlen > req->oldlen)
-				break;
 			error = sbuf_bcat(&sb, &kif, kif.kf_structsize) == 0 ?
 			    0 : ENOMEM;
 			if (error != 0)
 				break;
-			curlen += kif.kf_structsize;
 		}
 	}
 	sx_sunlock(&shm_dict_lock);
@@ -2068,7 +2090,7 @@ sysctl_posix_shm_list(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, posix_shm_list,
-    CTLFLAG_RD | CTLFLAG_MPSAFE | CTLTYPE_OPAQUE,
+    CTLFLAG_RD | CTLFLAG_PRISON | CTLFLAG_MPSAFE | CTLTYPE_OPAQUE,
     NULL, 0, sysctl_posix_shm_list, "",
     "POSIX SHM list");
 

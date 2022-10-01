@@ -54,7 +54,7 @@ static driver_t nvme_ahci_driver = {
 	sizeof(struct nvme_controller),
 };
 
-DRIVER_MODULE(nvme, ahci, nvme_ahci_driver, nvme_devclass, NULL, 0);
+DRIVER_MODULE(nvme, ahci, nvme_ahci_driver, NULL, NULL);
 
 static int
 nvme_ahci_probe (device_t device)
@@ -104,7 +104,14 @@ nvme_ahci_attach(device_t dev)
 	}
 	ctrlr->tag = (void *)0x1;
 
-	return nvme_attach(dev);
+	/*
+	 * We're attached via this funky mechanism. Flag the controller so that
+	 * it avoids things that can't work when we do that, like asking for
+	 * PCI config space entries.
+	 */
+	ctrlr->quirks |= QUIRK_AHCI;
+
+	return (nvme_attach(dev));	/* Note: failure frees resources */
 bad:
 	if (ctrlr->resource != NULL) {
 		bus_release_resource(dev, SYS_RES_MEMORY,

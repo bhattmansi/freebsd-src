@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -253,11 +253,11 @@ NVLIST_ARRPRTFUNC(int64_array, int64_t, longlong_t, "%lld")
 NVLIST_ARRPRTFUNC(uint64_array, uint64_t, u_longlong_t, "0x%llx")
 NVLIST_ARRPRTFUNC(string_array, char *, char *, "%s")
 
-/*ARGSUSED*/
 static int
 nvprint_nvlist(nvlist_prtctl_t pctl, void *private,
     nvlist_t *nvl, const char *name, nvlist_t *value)
 {
+	(void) private, (void) nvl;
 	FILE *fp = pctl->nvprt_fp;
 
 	indent(pctl, 1);
@@ -273,11 +273,11 @@ nvprint_nvlist(nvlist_prtctl_t pctl, void *private,
 	return (1);
 }
 
-/*ARGSUSED*/
 static int
 nvaprint_nvlist_array(nvlist_prtctl_t pctl, void *private,
     nvlist_t *nvl, const char *name, nvlist_t **valuep, uint_t count)
 {
+	(void) private, (void) nvl;
 	FILE *fp = pctl->nvprt_fp;
 	uint_t i;
 

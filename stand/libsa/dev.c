@@ -40,22 +40,30 @@ __FBSDID("$FreeBSD$");
 #include "stand.h"
 
 int
-nodev()
+nodev(void)
 {
 	return (ENXIO);
 }
 
 void
-nullsys()
+nullsys(void)
 {
 }
 
 /* ARGSUSED */
 int
-noioctl(f, cmd, data)
-	struct open_file *f;
-	u_long cmd;
-	void *data;
+noioctl(struct open_file *f __unused, u_long cmd __unused, void *data __unused)
 {
 	return (EINVAL);
+}
+
+char *
+devformat(struct devdesc *d)
+{
+	static char name[DEV_DEVLEN];
+
+	if (d->d_dev->dv_fmtdev != NULL)
+		return (d->d_dev->dv_fmtdev(d));
+	snprintf(name, sizeof(name), "%s%d:", d->d_dev->dv_name, d->d_unit);
+	return (name);
 }

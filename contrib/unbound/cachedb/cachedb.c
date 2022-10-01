@@ -519,7 +519,7 @@ parse_data(struct module_qstate* qstate, struct sldns_buffer* buf)
 		sldns_buffer_set_limit(buf, lim);
 		return 0;
 	}
-	if(parse_extract_edns(prs, &edns, qstate->env->scratch) !=
+	if(parse_extract_edns_from_response_msg(prs, &edns, qstate->env->scratch) !=
 		LDNS_RCODE_NOERROR) {
 		sldns_buffer_set_limit(buf, lim);
 		return 0;
@@ -662,7 +662,7 @@ cachedb_intcache_store(struct module_qstate* qstate)
 		return;
 	(void)dns_cache_store(qstate->env, &qstate->qinfo,
 		qstate->return_msg->rep, 0, qstate->prefetch_leeway, 0,
-		qstate->region, store_flags);
+		qstate->region, store_flags, qstate->qstarttime);
 }
 
 /**

@@ -33,7 +33,7 @@ $FreeBSD$
 
 /*
  * List of known MII OUIs.
- * For a complete list see http://standards.ieee.org/regauth/oui/
+ * For a complete list see http://standards-oui.ieee.org/
  *
  * XXX Vendors do obviously not agree how OUIs (24 bit) are mapped
  * to the 22 bits available in the id registers.
@@ -110,6 +110,7 @@ oui xxPMCSIERRA			0x0009c0	PMC-Sierra
 oui xxPMCSIERRA2		0x009057	PMC-Sierra
 oui xxREALTEK			0x000732	RealTek Semicondctor
 oui yyREALTEK			0x000004	RealTek Semicondctor
+oui xxTI			0x100014	Texas Instruments
 
 /*
  * List of known models.  Grouped by oui.
@@ -271,6 +272,7 @@ model xxMARVELL E1112		0x0009 Marvell 88E1112 Gigabit PHY
 model xxMARVELL E1149		0x000b Marvell 88E1149 Gigabit PHY
 model xxMARVELL E1111		0x000c Marvell 88E1111 Gigabit PHY
 model xxMARVELL E1145		0x000d Marvell 88E1145 Quad Gigabit PHY
+model xxMARVELL E1512		0x001d Marvell 88E1512 Gigabit PHY
 model xxMARVELL E1116		0x0021 Marvell 88E1116 Gigabit PHY
 model xxMARVELL E1116R		0x0024 Marvell 88E1116R Gigabit PHY
 model xxMARVELL E1118		0x0022 Marvell 88E1118 Gigabit PHY
@@ -314,6 +316,7 @@ model xxQUALSEMI QS6612		0x0000 QS6612 10/100 media interface
 
 /* RDC Semiconductor PHYs */
 model RDC R6040			0x0003 R6040 10/100 media interface
+model RDC R6040_2		0x0005 R6040 10/100 media interface
 
 /* RealTek Semicondctor PHYs */
 model yyREALTEK RTL8201L	0x0020 RTL8201L 10/100 media interface
@@ -335,6 +338,8 @@ model SIS 900			0x0000 SiS 900 10/100 media interface
 model TI TLAN10T		0x0001 ThunderLAN 10BASE-T media interface
 model TI 100VGPMI		0x0002 ThunderLAN 100VG-AnyLan media interface
 model TI TNETE2101		0x0003 TNETE2101 media interface
+model xxTI DP83867		0x0023 High Immunity 10/100/1000 PHY
+model xxTI DP83822		0x0024 High Immunity 10/100 PHY
 
 /* TDK Semiconductor PHYs */
 model xxTSC 78Q2120		0x0014 78Q2120 10/100 media interface
@@ -342,6 +347,7 @@ model xxTSC 78Q2121		0x0015 78Q2121 100BASE-TX media interface
 
 /* Vitesse Semiconductor (now Microsemi) */
 model xxVITESSE VSC8501		0x0013 Vitesse VSC8501 10/100/1000TX PHY
+model xxVITESSE VSC8504		0x000c Vitesse VSC8504 10/100/1000TX PHY
 model xxVITESSE VSC8641		0x0003 Vitesse VSC8641 10/100/1000TX PHY
 
 /* XaQti Corp. PHYs */

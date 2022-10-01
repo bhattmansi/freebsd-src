@@ -5,7 +5,7 @@
 .PATH:		${CLANG_SRCS}/lib/Headers
 
 INCSGROUPS=	INCS CUDA OMP PPC
-INCSDIR=	${LIBDIR}/clang/12.0.1/include
+INCSDIR=	${LIBDIR}/clang/14.0.5/include
 CUDADIR=	${INCSDIR}/cuda_wrappers
 OMPDIR=		${INCSDIR}/openmp_wrappers
 PPCDIR=		${INCSDIR}/ppc_wrappers
@@ -19,6 +19,7 @@ INCS+=		__clang_cuda_libdevice_declares.h
 INCS+=		__clang_cuda_math.h
 INCS+=		__clang_cuda_math_forward_declares.h
 INCS+=		__clang_cuda_runtime_wrapper.h
+INCS+=		__clang_cuda_texture_intrinsics.h
 INCS+=		__clang_hip_cmath.h
 INCS+=		__clang_hip_libdevice_declares.h
 INCS+=		__clang_hip_math.h
@@ -33,6 +34,7 @@ INCS+=		amxintrin.h
 INCS+=		arm64intr.h
 INCS+=		arm_acle.h
 INCS+=		arm_cmse.h
+INCS+=		arm_neon_sve_bridge.h
 INCS+=		armintr.h
 INCS+=		avx2intrin.h
 INCS+=		avx512bf16intrin.h
@@ -42,6 +44,7 @@ INCS+=		avx512cdintrin.h
 INCS+=		avx512dqintrin.h
 INCS+=		avx512erintrin.h
 INCS+=		avx512fintrin.h
+INCS+=		avx512fp16intrin.h
 INCS+=		avx512ifmaintrin.h
 INCS+=		avx512ifmavlintrin.h
 INCS+=		avx512pfintrin.h
@@ -53,6 +56,7 @@ INCS+=		avx512vlbitalgintrin.h
 INCS+=		avx512vlbwintrin.h
 INCS+=		avx512vlcdintrin.h
 INCS+=		avx512vldqintrin.h
+INCS+=		avx512vlfp16intrin.h
 INCS+=		avx512vlintrin.h
 INCS+=		avx512vlvbmi2intrin.h
 INCS+=		avx512vlvnniintrin.h
@@ -65,6 +69,7 @@ INCS+=		avxintrin.h
 INCS+=		avxvnniintrin.h
 INCS+=		bmi2intrin.h
 INCS+=		bmiintrin.h
+INCS+=		builtins.h
 INCS+=		cet.h
 INCS+=		cetintrin.h
 INCS+=		cldemoteintrin.h
@@ -72,6 +77,7 @@ INCS+=		clflushoptintrin.h
 INCS+=		clwbintrin.h
 INCS+=		clzerointrin.h
 INCS+=		cpuid.h
+INCS+=		crc32intrin.h
 INCS+=		emmintrin.h
 INCS+=		enqcmdintrin.h
 INCS+=		f16cintrin.h
@@ -79,9 +85,13 @@ INCS+=		fma4intrin.h
 INCS+=		fmaintrin.h
 INCS+=		fxsrintrin.h
 INCS+=		gfniintrin.h
+INCS+=		hexagon_circ_brev_intrinsics.h
+INCS+=		hexagon_protos.h
+INCS+=		hexagon_types.h
 INCS+=		hresetintrin.h
 INCS+=		htmintrin.h
 INCS+=		htmxlintrin.h
+INCS+=		hvx_hexagon_protos.h
 INCS+=		ia32intrin.h
 INCS+=		immintrin.h
 INCS+=		invpcidintrin.h
@@ -180,6 +190,14 @@ arm_${hdr:H}.h: ${CLANG_SRCS}/include/clang/Basic/arm_${hdr:H}.td
 	    -I ${CLANG_SRCS}/include/clang/Basic -d ${.TARGET:C/$/.d/} \
 	    -o ${.TARGET} ${CLANG_SRCS}/include/clang/Basic/arm_${hdr:H}.td
 GENINCS+=	arm_${hdr:H}.h
+.endfor
+
+.for hdr in vector/vector-header
+riscv_${hdr:H}.h: ${CLANG_SRCS}/include/clang/Basic/riscv_${hdr:H}.td
+	${CLANG_TBLGEN} -gen-riscv-${hdr:T} \
+	    -I ${CLANG_SRCS}/include/clang/Basic -d ${.TARGET:C/$/.d/} \
+	    -o ${.TARGET} ${CLANG_SRCS}/include/clang/Basic/riscv_${hdr:H}.td
+GENINCS+=	riscv_${hdr:H}.h
 .endfor
 
 CLEANFILES=	${GENINCS} ${GENINCS:C/$/.d/}

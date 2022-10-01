@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -99,7 +99,6 @@ extern const struct inode_operations zpl_ops_root;
 
 extern const struct file_operations zpl_fops_snapdir;
 extern const struct inode_operations zpl_ops_snapdir;
-extern const struct dentry_operations zpl_dops_snapdirs;
 
 extern const struct file_operations zpl_fops_shares;
 extern const struct inode_operations zpl_ops_shares;

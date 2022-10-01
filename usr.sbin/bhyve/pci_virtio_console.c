@@ -169,17 +169,15 @@ static void pci_vtcon_announce_port(struct pci_vtcon_port *);
 static void pci_vtcon_open_port(struct pci_vtcon_port *, bool);
 
 static struct virtio_consts vtcon_vi_consts = {
-	"vtcon",		/* our name */
-	VTCON_MAXQ,		/* we support VTCON_MAXQ virtqueues */
-	sizeof(struct pci_vtcon_config), /* config reg size */
-	pci_vtcon_reset,	/* reset */
-	NULL,			/* device-wide qnotify */
-	pci_vtcon_cfgread,	/* read virtio config */
-	pci_vtcon_cfgwrite,	/* write virtio config */
-	pci_vtcon_neg_features,	/* apply negotiated features */
-	VTCON_S_HOSTCAPS,	/* our capabilities */
+	.vc_name =	"vtcon",
+	.vc_nvq =	VTCON_MAXQ,
+	.vc_cfgsize =	sizeof(struct pci_vtcon_config),
+	.vc_reset =	pci_vtcon_reset,
+	.vc_cfgread =	pci_vtcon_cfgread,
+	.vc_cfgwrite =	pci_vtcon_cfgwrite,
+	.vc_apply_features = pci_vtcon_neg_features,
+	.vc_hv_caps =	VTCON_S_HOSTCAPS,
 };
-
 
 static void
 pci_vtcon_reset(void *vsc)
@@ -593,7 +591,7 @@ pci_vtcon_control_send(struct pci_vtcon_softc *sc,
 	vq_relchain(vq, req.idx, sizeof(struct pci_vtcon_control) + len);
 	vq_endchains(vq, 1);
 }
-    
+
 
 static void
 pci_vtcon_notify_tx(void *vsc, struct vqueue_info *vq)
@@ -696,7 +694,9 @@ pci_vtcon_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	sc->vsc_config = calloc(1, sizeof(struct pci_vtcon_config));
 	sc->vsc_config->max_nr_ports = VTCON_MAXPORTS;
 	sc->vsc_config->cols = 80;
-	sc->vsc_config->rows = 25; 
+	sc->vsc_config->rows = 25;
+
+	pthread_mutex_init(&sc->vsc_mtx, NULL);
 
 	vi_softc_linkup(&sc->vsc_vs, &vtcon_vi_consts, sc, pi, sc->vsc_queues);
 	sc->vsc_vs.vs_mtx = &sc->vsc_mtx;
@@ -750,10 +750,11 @@ pci_vtcon_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	return (0);
 }
 
-struct pci_devemu pci_de_vcon = {
+static const struct pci_devemu pci_de_vcon = {
 	.pe_emu =	"virtio-console",
 	.pe_init =	pci_vtcon_init,
 	.pe_barwrite =	vi_pci_write,
-	.pe_barread =	vi_pci_read
+	.pe_barread =	vi_pci_read,
+	.pe_legacy_config = pci_vtcon_legacy_config,
 };
 PCI_EMUL_SET(pci_de_vcon);

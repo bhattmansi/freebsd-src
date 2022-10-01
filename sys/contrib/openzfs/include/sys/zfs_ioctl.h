@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -124,6 +124,7 @@ typedef enum drr_headertype {
  * default use of "zfs send" won't encounter the bug mentioned above.
  */
 #define	DMU_BACKUP_FEATURE_SWITCH_TO_LARGE_BLOCKS (1 << 27)
+#define	DMU_BACKUP_FEATURE_BLAKE3		(1 << 28)
 
 /*
  * Mask of all supported backup features
@@ -134,7 +135,7 @@ typedef enum drr_headertype {
     DMU_BACKUP_FEATURE_COMPRESSED | DMU_BACKUP_FEATURE_LARGE_DNODE | \
     DMU_BACKUP_FEATURE_RAW | DMU_BACKUP_FEATURE_HOLDS | \
     DMU_BACKUP_FEATURE_REDACTED | DMU_BACKUP_FEATURE_SWITCH_TO_LARGE_BLOCKS | \
-    DMU_BACKUP_FEATURE_ZSTD)
+    DMU_BACKUP_FEATURE_ZSTD | DMU_BACKUP_FEATURE_BLAKE3)
 
 /* Are all features in the given flag word currently supported? */
 #define	DMU_STREAM_SUPPORTED(x)	(!((x) & ~DMU_BACKUP_FEATURE_MASK))

@@ -902,7 +902,7 @@ tcp_sack_partialack(struct tcpcb *tp, struct tcphdr *th)
 			    highdata - maxseg), highdata, NULL);
 		}
 	}
-	(void) tp->t_fb->tfb_tcp_output(tp);
+	(void) tcp_output(tp);
 }
 
 #if 0
@@ -956,15 +956,33 @@ tcp_sack_output(struct tcpcb *tp, int *sack_bytes_rexmt)
 	INP_WLOCK_ASSERT(tp->t_inpcb);
 	*sack_bytes_rexmt = tp->sackhint.sack_bytes_rexmit;
 	hole = tp->sackhint.nexthole;
-	if (hole == NULL || SEQ_LT(hole->rxmit, hole->end))
-		goto out;
-	while ((hole = TAILQ_NEXT(hole, scblink)) != NULL) {
-		if (SEQ_LT(hole->rxmit, hole->end)) {
-			tp->sackhint.nexthole = hole;
-			break;
+	if (hole == NULL)
+		return (hole);
+	if (SEQ_GEQ(hole->rxmit, hole->end)) {
+		for (;;) {
+			hole = TAILQ_NEXT(hole, scblink);
+			if (hole == NULL)
+				return (hole);
+			if (SEQ_LT(hole->rxmit, hole->end)) {
+				tp->sackhint.nexthole = hole;
+				break;
+			}
 		}
 	}
-out:
+	KASSERT(SEQ_LT(hole->start, hole->end), ("%s: hole.start >= hole.end", __func__));
+	if (!(V_tcp_do_newsack)) {
+		KASSERT(SEQ_LT(hole->start, tp->snd_fack), ("%s: hole.start >= snd.fack", __func__));
+		KASSERT(SEQ_LT(hole->end, tp->snd_fack), ("%s: hole.end >= snd.fack", __func__));
+		KASSERT(SEQ_LT(hole->rxmit, tp->snd_fack), ("%s: hole.rxmit >= snd.fack", __func__));
+		if (SEQ_GEQ(hole->start, hole->end) ||
+		    SEQ_GEQ(hole->start, tp->snd_fack) ||
+		    SEQ_GEQ(hole->end, tp->snd_fack) ||
+		    SEQ_GEQ(hole->rxmit, tp->snd_fack)) {
+			log(LOG_CRIT,"tcp: invalid SACK hole (%u-%u,%u) vs fwd ack %u, ignoring.\n",
+					hole->start, hole->end, hole->rxmit, tp->snd_fack);
+			return (NULL);
+		}
+	}
 	return (hole);
 }
 
@@ -1013,7 +1031,7 @@ void
 tcp_sack_lost_retransmission(struct tcpcb *tp, struct tcphdr *th)
 {
 	struct sackhole *temp;
-	uint32_t prev_cwnd;
+
 	if (IN_RECOVERY(tp->t_flags) &&
 	    SEQ_GT(tp->snd_fack, tp->snd_recover) &&
 	    ((temp = TAILQ_FIRST(&tp->snd_holes)) != NULL) &&
@@ -1037,7 +1055,6 @@ tcp_sack_lost_retransmission(struct tcpcb *tp, struct tcphdr *th)
 		 * prior to invoking another cwnd reduction by the CC
 		 * module, to not shrink it excessively.
 		 */
-		prev_cwnd = tp->snd_cwnd;
 		tp->snd_cwnd = tp->snd_ssthresh;
 		/*
 		 * Formally exit recovery, and let the CC module adjust

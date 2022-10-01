@@ -43,7 +43,7 @@ SRCS+=	libpmc_events.c
 
 WARNS?=	3
 
-CFLAGS+= -I${.CURDIR}
+CFLAGS+= -I${.CURDIR} -I${SRCTOP}/sys
 CWARNFLAGS.gcc+= -Wno-shadow -Wno-cast-align
 
 # Silence warnings about usage of deprecated std::auto_ptr
@@ -69,10 +69,12 @@ MAN+=	pmc.soft.3
 # PMC-dependent manual pages
 MAN+=	pmc.atom.3
 MAN+=	pmc.atomsilvermont.3
+MAN+=	pmc.cmn-600.3
 MAN+=	pmc.core.3
 MAN+=	pmc.core2.3
 MAN+=	pmc.corei7.3
 MAN+=	pmc.corei7uc.3
+MAN+=	pmc.dmc-620.3
 MAN+=	pmc.haswell.3
 MAN+=	pmc.haswelluc.3
 MAN+=	pmc.haswellxeon.3
@@ -81,8 +83,6 @@ MAN+=	pmc.ivybridge.3
 MAN+=	pmc.ivybridgexeon.3
 MAN+=	pmc.k7.3
 MAN+=	pmc.k8.3
-MAN+=	pmc.mips24k.3
-MAN+=	pmc.octeon.3
 MAN+=	pmc.sandybridge.3
 MAN+=	pmc.sandybridgeuc.3
 MAN+=	pmc.sandybridgexeon.3

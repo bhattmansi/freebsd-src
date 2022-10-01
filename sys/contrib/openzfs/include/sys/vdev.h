@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -104,7 +104,7 @@ extern void vdev_metaslab_fini(vdev_t *vd);
 extern void vdev_metaslab_set_size(vdev_t *);
 extern void vdev_expand(vdev_t *vd, uint64_t txg);
 extern void vdev_split(vdev_t *vd);
-extern void vdev_deadman(vdev_t *vd, char *tag);
+extern void vdev_deadman(vdev_t *vd, const char *tag);
 
 typedef void vdev_xlate_func_t(void *arg, range_seg64_t *physical_rs);
 
@@ -218,6 +218,9 @@ typedef enum {
 } vdev_labeltype_t;
 
 extern int vdev_label_init(vdev_t *vd, uint64_t txg, vdev_labeltype_t reason);
+
+extern int vdev_prop_set(vdev_t *vd, nvlist_t *innvl, nvlist_t *outnvl);
+extern int vdev_prop_get(vdev_t *vd, nvlist_t *nvprops, nvlist_t *outnvl);
 
 #ifdef	__cplusplus
 }

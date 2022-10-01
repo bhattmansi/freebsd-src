@@ -292,16 +292,14 @@ struct buf {
 /*
  * Buffer locking
  */
-extern const char *buf_wmesg;		/* Default buffer lock message */
-#define BUF_WMESG "bufwait"
 #include <sys/proc.h>			/* XXX for curthread */
 #include <sys/mutex.h>
 
 /*
  * Initialize a lock.
  */
-#define BUF_LOCKINIT(bp)						\
-	lockinit(&(bp)->b_lock, PRIBIO + 4, buf_wmesg, 0, LK_NEW)
+#define BUF_LOCKINIT(bp, wmesg)						\
+	lockinit(&(bp)->b_lock, PRIBIO + 4, wmesg, 0, LK_NEW)
 /*
  *
  * Get a lock sleeping non-interruptably until it becomes available.
@@ -510,6 +508,7 @@ buf_track(struct buf *bp __unused, const char *location __unused)
 #define	GB_CKHASH	0x0020		/* If reading, calc checksum hash */
 #define	GB_NOSPARSE	0x0040		/* Do not instantiate holes */
 #define	GB_CVTENXIO	0x0080		/* Convert errors to ENXIO */
+#define	GB_NOWITNESS	0x0100		/* Do not record for WITNESS */
 
 #ifdef _KERNEL
 extern int	nbuf;			/* The number of buffer headers */
@@ -523,7 +522,8 @@ extern int	bdwriteskip;
 extern int	dirtybufferflushes;
 extern int	altbufferflushes;
 extern int	nswbuf;			/* Number of swap I/O buffer headers. */
-extern caddr_t	unmapped_buf;	/* Data address for unmapped buffers. */
+extern caddr_t __read_mostly unmapped_buf; /* Data address for unmapped
+					      buffers. */
 
 static inline int
 buf_mapped(struct buf *bp)

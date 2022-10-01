@@ -202,7 +202,8 @@ struct vm_object {
 #define	OBJ_SIZEVNLOCK	0x0040		/* lock vnode to check obj size */
 #define	OBJ_PG_DTOR	0x0080		/* dont reset object, leave that for dtor */
 #define	OBJ_SHADOWLIST	0x0100		/* Object is on the shadow list. */
-#define	OBJ_SWAP	0x0200		/* object swaps */
+#define	OBJ_SWAP	0x0200		/* object swaps, type will be OBJT_SWAP
+					   or dynamically registered */
 #define	OBJ_SPLIT	0x0400		/* object is being split */
 #define	OBJ_COLLAPSING	0x0800		/* Parent of collapse. */
 #define	OBJ_COLORED	0x1000		/* pg_color is defined */
@@ -232,6 +233,7 @@ struct vm_object {
  */
 #define	OBJPR_CLEANONLY	0x1		/* Don't remove dirty pages. */
 #define	OBJPR_NOTMAPPED	0x2		/* Don't unmap pages. */
+#define	OBJPR_VALIDONLY	0x4		/* Ignore invalid pages. */
 
 TAILQ_HEAD(object_q, vm_object);
 
@@ -316,7 +318,7 @@ vm_object_color(vm_object_t object, u_short color)
 
 	if ((object->flags & OBJ_COLORED) == 0) {
 		object->pg_color = color;
-		object->flags |= OBJ_COLORED;
+		vm_object_set_flag(object, OBJ_COLORED);
 	}
 }
 
@@ -390,6 +392,7 @@ boolean_t vm_object_sync(vm_object_t, vm_ooffset_t, vm_size_t, boolean_t,
 void vm_object_unwire(vm_object_t object, vm_ooffset_t offset,
     vm_size_t length, uint8_t queue);
 struct vnode *vm_object_vnode(vm_object_t object);
+bool vm_object_is_active(vm_object_t obj);
 #endif				/* _KERNEL */
 
 #endif				/* _VM_OBJECT_ */

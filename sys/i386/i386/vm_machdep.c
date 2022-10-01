@@ -604,9 +604,9 @@ sf_buf_shootdown(struct sf_buf *sf, int flags)
 	if ((flags & SFB_CPUPRIVATE) == 0) {
 		other_cpus = all_cpus;
 		CPU_CLR(cpuid, &other_cpus);
-		CPU_ANDNOT(&other_cpus, &sf->cpumask);
+		CPU_ANDNOT(&other_cpus, &other_cpus, &sf->cpumask);
 		if (!CPU_EMPTY(&other_cpus)) {
-			CPU_OR(&sf->cpumask, &other_cpus);
+			CPU_OR(&sf->cpumask, &sf->cpumask, &other_cpus);
 			smp_masked_invlpg(other_cpus, sf->kva, kernel_pmap,
 			    sf_buf_shootdown_curcpu_cb);
 		}
@@ -649,39 +649,4 @@ sf_buf_invalidate_cache(vm_page_t m)
 {
 
 	return (sf_buf_process_page(m, sf_buf_invalidate));
-}
-
-/*
- * Software interrupt handler for queued VM system processing.
- */   
-void  
-swi_vm(void *dummy) 
-{     
-	if (busdma_swi_pending != 0)
-		busdma_swi();
-}
-
-/*
- * Tell whether this address is in some physical memory region.
- * Currently used by the kernel coredump code in order to avoid
- * dumping the ``ISA memory hole'' which could cause indefinite hangs,
- * or other unpredictable behaviour.
- */
-
-int
-is_physical_memory(vm_paddr_t addr)
-{
-
-#ifdef DEV_ISA
-	/* The ISA ``memory hole''. */
-	if (addr >= 0xa0000 && addr < 0x100000)
-		return 0;
-#endif
-
-	/*
-	 * stuff other tests for known memory-mapped devices (PCI?)
-	 * here
-	 */
-
-	return 1;
 }

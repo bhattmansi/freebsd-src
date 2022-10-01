@@ -55,12 +55,6 @@
 #define	LINUX_IFHWADDRLEN	6
 #define	LINUX_IFNAMSIZ		16
 
-/*
- * Criteria for interface name translation
- */
-#define	IFP_IS_ETH(ifp)		(ifp->if_type == IFT_ETHER)
-#define	IFP_IS_LOOP(ifp)	(ifp->if_type == IFT_LOOP)
-
 struct l_sockaddr {
 	unsigned short	sa_family;
 	char		sa_data[14];
@@ -124,8 +118,8 @@ typedef struct {
 
 /* primitives to manipulate sigset_t */
 #define	LINUX_SIGEMPTYSET(set)		(set).__mask = 0
-#define	LINUX_SIGISMEMBER(set, sig)	(1UL & ((set).__mask >> _SIG_IDX(sig)))
-#define	LINUX_SIGADDSET(set, sig)	(set).__mask |= 1UL << _SIG_IDX(sig)
+#define	LINUX_SIGISMEMBER(set, sig)	(1ULL & ((set).__mask >> _SIG_IDX(sig)))
+#define	LINUX_SIGADDSET(set, sig)	(set).__mask |= 1ULL << _SIG_IDX(sig)
 
 void linux_to_bsd_sigset(l_sigset_t *, sigset_t *);
 void bsd_to_linux_sigset(sigset_t *, l_sigset_t *);
@@ -172,6 +166,11 @@ void bsd_to_linux_sigset(sigset_t *, l_sigset_t *);
 
 int linux_to_bsd_signal(int sig);
 int bsd_to_linux_signal(int sig);
+
+/* sigprocmask actions */
+#define	LINUX_SIG_BLOCK		0
+#define	LINUX_SIG_UNBLOCK	1
+#define	LINUX_SIG_SETMASK	2
 
 void linux_dev_shm_create(void);
 void linux_dev_shm_destroy(void);
@@ -266,5 +265,10 @@ struct l_statx {
 };
 
 #define	lower_32_bits(n)	((uint32_t)((n) & 0xffffffff))
+
+#ifdef KTRACE
+#define	linux_ktrsigset(s, l)	\
+	ktrstruct("l_sigset_t", (s), l)
+#endif
 
 #endif /* _LINUX_MI_H_ */

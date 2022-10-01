@@ -326,7 +326,8 @@ struct in6_prflags {
 	struct prf_ra {
 		u_char onlink : 1;
 		u_char autonomous : 1;
-		u_char reserved : 6;
+		u_char ra_derived: 1;
+		u_char reserved : 5;
 	} prf_ra;
 	u_char prf_reserved1;
 	u_short prf_reserved2;
@@ -357,6 +358,7 @@ struct  in6_prefixreq {
 
 #define ipr_raf_onlink		ipr_flags.prf_ra.onlink
 #define ipr_raf_auto		ipr_flags.prf_ra.autonomous
+#define ipr_raf_ra_derived	ipr_flags.prf_ra.ra_derived
 
 #define ipr_statef_onlink	ipr_flags.prf_state.onlink
 
@@ -407,6 +409,7 @@ struct	in6_rrenumreq {
 #define IA6_DSTSIN6(ia)	(&((ia)->ia_dstaddr))
 #define IFA_IN6(x)	(&((struct sockaddr_in6 *)((x)->ifa_addr))->sin6_addr)
 #define IFA_DSTIN6(x)	(&((struct sockaddr_in6 *)((x)->ifa_dstaddr))->sin6_addr)
+#define IFA_MASKIN6(x)	(&((struct sockaddr_in6 *)((x)->ifa_netmask))->sin6_addr)
 
 #define IFPR_IN6(x)	(&((struct sockaddr_in6 *)((x)->ifpr_prefix))->sin6_addr)
 
@@ -880,12 +883,13 @@ int	ip6_setmoptions(struct inpcb *, struct sockopt *);
 #define IN6_IFAUPDATE_DADDELAY	0x1 /* first time to configure an address */
 
 int	in6_mask2len(struct in6_addr *, u_char *);
-int	in6_control(struct socket *, u_long, caddr_t, struct ifnet *,
+int	in6_control(struct socket *, u_long, void *, struct ifnet *,
 	struct thread *);
 int	in6_update_ifa(struct ifnet *, struct in6_aliasreq *,
 	struct in6_ifaddr *, int);
 void	in6_prepare_ifra(struct in6_aliasreq *, const struct in6_addr *,
 	const struct in6_addr *);
+int	in6_addifaddr(struct ifnet *, struct in6_aliasreq *, struct in6_ifaddr *);
 void	in6_purgeaddr(struct ifaddr *);
 void	in6_purgeifaddr(struct in6_ifaddr *);
 int	in6if_do_dad(struct ifnet *);
@@ -915,6 +919,8 @@ int	in6_is_addr_deprecated(struct sockaddr_in6 *);
 int	in6_src_ioctl(u_long, caddr_t);
 
 void	in6_newaddrmsg(struct in6_ifaddr *, int);
+
+void	in6_purge_proxy_ndp(struct ifnet *);
 /*
  * Extended API for IPv6 FIB support.
  */

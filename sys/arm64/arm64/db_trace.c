@@ -50,7 +50,7 @@ __FBSDID("$FreeBSD$");
 #define	FRAME_UNHANDLED	4
 
 void
-db_md_list_watchpoints()
+db_md_list_watchpoints(void)
 {
 
 	dbg_show_watchpoint();
@@ -122,7 +122,7 @@ db_stack_trace_cmd(struct thread *td, struct unwind_state *frame)
 			}
 
 			frame->fp = tf->tf_x[29];
-			frame->pc = tf->tf_elr;
+			frame->pc = ADDR_MAKE_CANONICAL(tf->tf_elr);
 			if (!INKERNEL(frame->fp))
 				break;
 		} else {

@@ -79,7 +79,7 @@ struct ip {
 #define	IPTOS_LOWDELAY		0x10
 #define	IPTOS_THROUGHPUT	0x08
 #define	IPTOS_RELIABILITY	0x04
-#define	IPTOS_MINCOST		0x02
+#define	IPTOS_MINCOST		IPTOS_DSCP_CS0
 
 /*
  * Definitions for IP precedence (also in ip_tos) (deprecated).
@@ -210,7 +210,6 @@ struct	ip_timestamp {
  */
 #define	MAXTTL		255		/* maximum time to live (seconds) */
 #define	IPDEFTTL	64		/* default ttl, from RFC 1340 */
-#define	IPFRAGTTL	60		/* time to live for frags, slowhz */
 #define	IPTTLDEC	1		/* subtracted when forwarding */
 #define	IP_MSS		576		/* default maximum segment size */
 

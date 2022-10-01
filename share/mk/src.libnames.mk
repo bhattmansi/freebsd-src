@@ -16,10 +16,12 @@ _PRIVATELIBS=	\
 		atf_c \
 		atf_cxx \
 		auditd \
+		bsddialog \
 		bsdstat \
 		cbor \
 		devdctl \
 		event1 \
+		fido2 \
 		gmock \
 		gtest \
 		gmock_main \
@@ -33,6 +35,10 @@ _PRIVATELIBS=	\
 		unbound \
 		zstd
 
+# Let projects based on FreeBSD append to _PRIVATELIBS
+# by maintaining their own LOCAL_PRIVATELIBS list.
+_PRIVATELIBS+=	${LOCAL_PRIVATELIBS}
+
 _INTERNALLIBS=	\
 		amu \
 		bsnmptools \
@@ -42,6 +48,7 @@ _INTERNALLIBS=	\
 		fifolog \
 		ifconfig \
 		ipf \
+		iscsiutil \
 		lpr \
 		lua \
 		lutok \
@@ -76,6 +83,10 @@ _INTERNALLIBS=	\
 		wpautils \
 		wpawps
 
+# Let projects based on FreeBSD append to _INTERNALLIBS
+# by maintaining their own LOCAL_INTERNALLIBS list.
+_INTERNALLIBS+=	${LOCAL_INTERNALLIBS}
+
 _LIBRARIES=	\
 		${_PRIVATELIBS} \
 		${_INTERNALLIBS} \
@@ -86,6 +97,7 @@ _LIBRARIES=	\
 		archive \
 		asn1 \
 		avl \
+		BlocksRuntime \
 		be \
 		begemot \
 		bluetooth \
@@ -128,6 +140,7 @@ _LIBRARIES=	\
 		execinfo \
 		fetch \
 		figpar \
+		formw \
 		geom \
 		gpio \
 		gssapi \
@@ -231,6 +244,7 @@ _LIBRARIES+= \
 		ibnetdisc \
 		ibumad \
 		ibverbs \
+		irdma \
 		mlx4 \
 		mlx5 \
 		rdmacm \
@@ -258,16 +272,25 @@ LIBVERIEXEC?=	${LIBVERIEXECDIR}/libveriexec.a
 # 2nd+ order consumers.  Auto-generating this would be better.
 _DP_80211=	sbuf bsdxml
 _DP_9p=		sbuf
+# XXX: Not bootstrapped so uses host version on non-FreeBSD, so don't use a
+# FreeBSD-specific dependency list
+.if ${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING)
 _DP_archive=	z bz2 lzma bsdxml zstd
+.endif
+_DP_avl=	spl
+_DP_bsddialog=	formw ncursesw tinfow
 _DP_zstd=	pthread
 .if ${MK_BLACKLIST} != "no"
 _DP_blacklist+=	pthread
 .endif
 _DP_crypto=	pthread
+# See comment by _DP_archive above
+.if ${.MAKE.OS} == "FreeBSD" || !defined(BOOTSTRAPPING)
 .if ${MK_OPENSSL} != "no"
 _DP_archive+=	crypto
 .else
 _DP_archive+=	md
+.endif
 .endif
 _DP_sqlite3=	pthread
 _DP_ssl=	crypto
@@ -310,7 +333,7 @@ _DP_proc=	cxxrt
 .if ${MK_CDDL} != "no"
 _DP_proc+=	ctf
 .endif
-_DP_proc+=	elf procstat rtld_db util
+_DP_proc+=	elf procstat rtld_db util z
 _DP_mp=	crypto
 _DP_memstat=	kvm
 _DP_magic=	z
@@ -324,7 +347,7 @@ _DP_fetch=	ssl crypto
 _DP_fetch=	md
 .endif
 _DP_execinfo=	elf
-_DP_dwarf=	elf
+_DP_dwarf=	elf z
 _DP_dpv=	dialog figpar util tinfow ncursesw
 _DP_dialog=	tinfow ncursesw m
 _DP_cuse=	pthread
@@ -339,6 +362,7 @@ _DP_pam=	radius tacplus opie md util
 _DP_pam+=	krb5
 .endif
 .if ${MK_OPENSSH} != "no"
+_DP_fido2+=	crypto z
 _DP_pam+=	ssh
 .endif
 .if ${MK_NIS} != "no"
@@ -357,8 +381,8 @@ _DP_heimbase=	pthread
 _DP_heimipcc=	heimbase roken pthread
 _DP_heimipcs=	heimbase roken pthread
 _DP_kafs5=	asn1 krb5 roken
-_DP_krb5+=	asn1 com_err crypt crypto hx509 roken wind heimbase heimipcc
-_DP_gssapi_krb5+=	gssapi krb5 crypto roken asn1 com_err
+_DP_krb5=	asn1 com_err crypt crypto hx509 roken wind heimbase heimipcc
+_DP_gssapi_krb5=	gssapi krb5 crypto roken asn1 com_err
 _DP_lzma=	md pthread
 _DP_ucl=	m
 _DP_vmmapi=	util
@@ -370,6 +394,8 @@ _DP_ztest=	geom m nvpair umem zpool pthread avl zfs_core spl zutil zfs uutil icp
 # The libc dependencies are not strictly needed but are defined to make the
 # assert happy.
 _DP_c=		compiler_rt
+# Use libssp_nonshared only on i386 and power*.  Other archs emit direct calls
+# to __stack_chk_fail, not __stack_chk_fail_local provided by libssp_nonshared.
 .if ${MK_SSP} != "no" && \
     (${MACHINE_ARCH} == "i386" || ${MACHINE_ARCH:Mpower*} != "")
 _DP_c+=		ssp_nonshared
@@ -378,6 +404,8 @@ _DP_stats=	sbuf pthread
 _DP_stdthreads=	pthread
 _DP_tacplus=	md
 _DP_ncursesw=	tinfow
+_DP_formw=	ncursesw
+_DP_nvpair=	spl
 _DP_panelw=	ncursesw
 _DP_rpcsec_gss=	gssapi
 _DP_smb=	kiconv
@@ -389,9 +417,9 @@ _DP_uutil=	avl spl
 _DP_zfs=	md pthread umem util uutil m avl bsdxml crypto geom nvpair \
 	z zfs_core zutil
 _DP_zfsbootenv= zfs nvpair
-_DP_zfs_core=	nvpair
+_DP_zfs_core=	nvpair spl zutil
 _DP_zpool=	md pthread z icp spl nvpair avl umem
-_DP_zutil=	avl tpool
+_DP_zutil=	avl geom m tpool
 _DP_be=		zfs spl nvpair zfsbootenv
 _DP_netmap=
 _DP_ifconfig=	m
@@ -405,6 +433,7 @@ _DP_ibmad=	ibumad
 _DP_ibnetdisc=	osmcomp ibmad ibumad
 _DP_ibumad=	
 _DP_ibverbs=
+_DP_irdma=	ibverbs pthread
 _DP_mlx4=	ibverbs pthread
 _DP_mlx5=	ibverbs pthread
 _DP_rdmacm=	ibverbs
@@ -450,8 +479,12 @@ LDADD_${_l}?=	${LDADD_${_l}_L} -l${_l:S/${PIE_SUFFIX}//}${PIE_SUFFIX}
 LDADD_${_l}?=	${LDADD_${_l}_L} -l${_l}
 .endif
 # Add in all dependencies for static linkage.
+# Bootstrapping from non-FreeBSD needs special handling, since it overrides
+# NO_SHARED back to yes despite only building static versions of bootstrap
+# libraries (see tools/build/mk/Makefile.boot.pre).
 .if defined(_DP_${_l}) && (${_INTERNALLIBS:M${_l}} || \
-    (defined(NO_SHARED) && ${NO_SHARED:tl} != "no"))
+    (defined(NO_SHARED) && ${NO_SHARED:tl} != "no") || \
+    (defined(BOOTSTRAPPING) && ${.MAKE.OS} != "FreeBSD"))
 .for _d in ${_DP_${_l}}
 DPADD_${_l}+=	${DPADD_${_d}}
 LDADD_${_l}+=	${LDADD_${_d}}
@@ -536,6 +569,12 @@ LIBIFCONFIG?=	${LIBIFCONFIGDIR}/libifconfig${PIE_SUFFIX}.a
 
 LIBIPFDIR=	${_LIB_OBJTOP}/sbin/ipf/libipf
 LIBIPF?=	${LIBIPFDIR}/libipf${PIE_SUFFIX}.a
+
+LIBNVDIR=	${_LIB_OBJTOP}/lib/libnv
+LIBNV?=		${LIBNVDIR}/libnv${PIE_SUFFIX}.a
+
+LIBISCSIUTILDIR=	${_LIB_OBJTOP}/lib/libiscsiutil
+LIBISCSIUTIL?=	${LIBISCSIUTILDIR}/libiscsiutil${PIE_SUFFIX}.a
 
 LIBTELNETDIR=	${_LIB_OBJTOP}/lib/libtelnet
 LIBTELNET?=	${LIBTELNETDIR}/libtelnet${PIE_SUFFIX}.a
@@ -623,88 +662,99 @@ LIBC_NOSSP_PIC?=	${LIBC_NOSSP_PICDIR}/libc_nossp_pic.a
 # Define a directory for each library.  This is useful for adding -L in when
 # not using a --sysroot or for meta mode bootstrapping when there is no
 # Makefile.depend.  These are sorted by directory.
-LIBAVLDIR=	${OBJTOP}/cddl/lib/libavl
-LIBCTFDIR=	${OBJTOP}/cddl/lib/libctf
-LIBDTRACEDIR=	${OBJTOP}/cddl/lib/libdtrace
-LIBICPDIR=	${OBJTOP}/cddl/lib/libicp
-LIBNVPAIRDIR=	${OBJTOP}/cddl/lib/libnvpair
-LIBUMEMDIR=	${OBJTOP}/cddl/lib/libumem
-LIBUUTILDIR=	${OBJTOP}/cddl/lib/libuutil
-LIBZFSDIR=	${OBJTOP}/cddl/lib/libzfs
-LIBZFS_COREDIR=	${OBJTOP}/cddl/lib/libzfs_core
-LIBZFSBOOTENVDIR=	${OBJTOP}/cddl/lib/libzfsbootenv
-LIBZPOOLDIR=	${OBJTOP}/cddl/lib/libzpool
-LIBZUTILDIR=	${OBJTOP}/cddl/lib/libzutil
-LIBTPOOLDIR=	${OBJTOP}/cddl/lib/libtpool
+LIBAVLDIR=	${_LIB_OBJTOP}/cddl/lib/libavl
+LIBCTFDIR=	${_LIB_OBJTOP}/cddl/lib/libctf
+LIBDTRACEDIR=	${_LIB_OBJTOP}/cddl/lib/libdtrace
+LIBICPDIR=	${_LIB_OBJTOP}/cddl/lib/libicp
+LIBICP?=	${LIBICPDIR}/libicp${PIE_SUFFIX}.a
+LIBICP_RESCUEDIR=	${_LIB_OBJTOP}/cddl/lib/libicp_rescue
+LIBICP_RESCUE?=	${LIBICP_RESCUEDIR}/libicp_rescue${PIE_SUFFIX}.a
+LIBNVPAIRDIR=	${_LIB_OBJTOP}/cddl/lib/libnvpair
+LIBNVPAIR?=	${LIBNVPAIRDIR}/libnvpair${PIE_SUFFIX}.a
+LIBUMEMDIR=	${_LIB_OBJTOP}/cddl/lib/libumem
+LIBUUTILDIR=	${_LIB_OBJTOP}/cddl/lib/libuutil
+LIBZFSDIR=	${_LIB_OBJTOP}/cddl/lib/libzfs
+LIBZFS?=	${LIBZFSDIR}/libzfs${PIE_SUFFIX}.a
+LIBZFS_COREDIR=	${_LIB_OBJTOP}/cddl/lib/libzfs_core
+LIBZFS_CORE?=	${LIBZFS_COREDIR}/libzfs_core${PIE_SUFFIX}.a
+LIBZFSBOOTENVDIR=	${_LIB_OBJTOP}/cddl/lib/libzfsbootenv
+LIBZFSBOOTENV?=	${LIBZFSBOOTENVDIR}/libzfsbootenv${PIE_SUFFIX}.a
+LIBZPOOLDIR=	${_LIB_OBJTOP}/cddl/lib/libzpool
+LIBZPOOL?=	${LIBZPOOLDIR}/libzpool${PIE_SUFFIX}.a
+LIBZUTILDIR=	${_LIB_OBJTOP}/cddl/lib/libzutil
+LIBZUTIL?=	${LIBZUTILDIR}/libzutil${PIE_SUFFIX}.a
+LIBTPOOLDIR=	${_LIB_OBJTOP}/cddl/lib/libtpool
 
 # OFED support
-LIBCXGB4DIR=	${OBJTOP}/lib/ofed/libcxgb4
-LIBIBCMDIR=	${OBJTOP}/lib/ofed/libibcm
-LIBIBMADDIR=	${OBJTOP}/lib/ofed/libibmad
-LIBIBNETDISCDIR=${OBJTOP}/lib/ofed/libibnetdisc
-LIBIBUMADDIR=	${OBJTOP}/lib/ofed/libibumad
-LIBIBVERBSDIR=	${OBJTOP}/lib/ofed/libibverbs
-LIBMLX4DIR=	${OBJTOP}/lib/ofed/libmlx4
-LIBMLX5DIR=	${OBJTOP}/lib/ofed/libmlx5
-LIBRDMACMDIR=	${OBJTOP}/lib/ofed/librdmacm
-LIBOSMCOMPDIR=	${OBJTOP}/lib/ofed/complib
-LIBOPENSMDIR=	${OBJTOP}/lib/ofed/libopensm
-LIBOSMVENDORDIR=${OBJTOP}/lib/ofed/libvendor
+LIBCXGB4DIR=	${_LIB_OBJTOP}/lib/ofed/libcxgb4
+LIBIBCMDIR=	${_LIB_OBJTOP}/lib/ofed/libibcm
+LIBIBMADDIR=	${_LIB_OBJTOP}/lib/ofed/libibmad
+LIBIBNETDISCDIR=${_LIB_OBJTOP}/lib/ofed/libibnetdisc
+LIBIBUMADDIR=	${_LIB_OBJTOP}/lib/ofed/libibumad
+LIBIBVERBSDIR=	${_LIB_OBJTOP}/lib/ofed/libibverbs
+LIBIRDMADIR=	${_LIB_OBJTOP}/lib/ofed/libirdma
+LIBMLX4DIR=	${_LIB_OBJTOP}/lib/ofed/libmlx4
+LIBMLX5DIR=	${_LIB_OBJTOP}/lib/ofed/libmlx5
+LIBRDMACMDIR=	${_LIB_OBJTOP}/lib/ofed/librdmacm
+LIBOSMCOMPDIR=	${_LIB_OBJTOP}/lib/ofed/complib
+LIBOPENSMDIR=	${_LIB_OBJTOP}/lib/ofed/libopensm
+LIBOSMVENDORDIR=${_LIB_OBJTOP}/lib/ofed/libvendor
 
-LIBDIALOGDIR=	${OBJTOP}/gnu/lib/libdialog
-LIBSSPDIR=	${OBJTOP}/lib/libssp
-LIBSSP_NONSHAREDDIR=	${OBJTOP}/lib/libssp_nonshared
-LIBASN1DIR=	${OBJTOP}/kerberos5/lib/libasn1
-LIBGSSAPI_KRB5DIR=	${OBJTOP}/kerberos5/lib/libgssapi_krb5
-LIBGSSAPI_NTLMDIR=	${OBJTOP}/kerberos5/lib/libgssapi_ntlm
-LIBGSSAPI_SPNEGODIR=	${OBJTOP}/kerberos5/lib/libgssapi_spnego
-LIBHDBDIR=	${OBJTOP}/kerberos5/lib/libhdb
-LIBHEIMBASEDIR=	${OBJTOP}/kerberos5/lib/libheimbase
-LIBHEIMIPCCDIR=	${OBJTOP}/kerberos5/lib/libheimipcc
-LIBHEIMIPCSDIR=	${OBJTOP}/kerberos5/lib/libheimipcs
-LIBHEIMNTLMDIR=	${OBJTOP}/kerberos5/lib/libheimntlm
-LIBHX509DIR=	${OBJTOP}/kerberos5/lib/libhx509
-LIBKADM5CLNTDIR=	${OBJTOP}/kerberos5/lib/libkadm5clnt
-LIBKADM5SRVDIR=	${OBJTOP}/kerberos5/lib/libkadm5srv
-LIBKAFS5DIR=	${OBJTOP}/kerberos5/lib/libkafs5
-LIBKDCDIR=	${OBJTOP}/kerberos5/lib/libkdc
-LIBKRB5DIR=	${OBJTOP}/kerberos5/lib/libkrb5
-LIBROKENDIR=	${OBJTOP}/kerberos5/lib/libroken
-LIBWINDDIR=	${OBJTOP}/kerberos5/lib/libwind
-LIBATF_CDIR=	${OBJTOP}/lib/atf/libatf-c
-LIBATF_CXXDIR=	${OBJTOP}/lib/atf/libatf-c++
-LIBGMOCKDIR=	${OBJTOP}/lib/googletest/gmock
-LIBGMOCK_MAINDIR=	${OBJTOP}/lib/googletest/gmock_main
-LIBGTESTDIR=	${OBJTOP}/lib/googletest/gtest
-LIBGTEST_MAINDIR=	${OBJTOP}/lib/googletest/gtest_main
-LIBALIASDIR=	${OBJTOP}/lib/libalias/libalias
-LIBBLACKLISTDIR=	${OBJTOP}/lib/libblacklist
-LIBBLOCKSRUNTIMEDIR=	${OBJTOP}/lib/libblocksruntime
-LIBBSNMPDIR=	${OBJTOP}/lib/libbsnmp/libbsnmp
-LIBCASPERDIR=	${OBJTOP}/lib/libcasper/libcasper
-LIBCAP_DNSDIR=	${OBJTOP}/lib/libcasper/services/cap_dns
-LIBCAP_GRPDIR=	${OBJTOP}/lib/libcasper/services/cap_grp
-LIBCAP_NETDIR=	${OBJTOP}/lib/libcasper/services/cap_net
-LIBCAP_PWDDIR=	${OBJTOP}/lib/libcasper/services/cap_pwd
-LIBCAP_SYSCTLDIR=	${OBJTOP}/lib/libcasper/services/cap_sysctl
-LIBCAP_SYSLOGDIR=	${OBJTOP}/lib/libcasper/services/cap_syslog
-LIBCBORDIR=	${OBJTOP}/lib/libcbor
-LIBBSDXMLDIR=	${OBJTOP}/lib/libexpat
-LIBKVMDIR=	${OBJTOP}/lib/libkvm
-LIBPTHREADDIR=	${OBJTOP}/lib/libthr
-LIBMDIR=	${OBJTOP}/lib/msun
-LIBFORMWDIR=	${OBJTOP}/lib/ncurses/form
-LIBMENUWDIR=	${OBJTOP}/lib/ncurses/menu
-LIBNCURSESWDIR=	${OBJTOP}/lib/ncurses/ncurses
-LIBTINFOWDIR=	${OBJTOP}/lib/ncurses/tinfo
-LIBPANELWDIR=	${OBJTOP}/lib/ncurses/panel
-LIBCRYPTODIR=	${OBJTOP}/secure/lib/libcrypto
-LIBSPLDIR=	${OBJTOP}/cddl/lib/libspl
-LIBSSHDIR=	${OBJTOP}/secure/lib/libssh
-LIBSSLDIR=	${OBJTOP}/secure/lib/libssl
-LIBTEKENDIR=	${OBJTOP}/sys/teken/libteken
-LIBEGACYDIR=	${OBJTOP}/tools/build
-LIBLNDIR=	${OBJTOP}/usr.bin/lex/lib
+LIBDIALOGDIR=	${_LIB_OBJTOP}/gnu/lib/libdialog
+LIBSSPDIR=	${_LIB_OBJTOP}/lib/libssp
+LIBSSP_NONSHAREDDIR=	${_LIB_OBJTOP}/lib/libssp_nonshared
+LIBASN1DIR=	${_LIB_OBJTOP}/kerberos5/lib/libasn1
+LIBGSSAPI_KRB5DIR=	${_LIB_OBJTOP}/kerberos5/lib/libgssapi_krb5
+LIBGSSAPI_NTLMDIR=	${_LIB_OBJTOP}/kerberos5/lib/libgssapi_ntlm
+LIBGSSAPI_SPNEGODIR=	${_LIB_OBJTOP}/kerberos5/lib/libgssapi_spnego
+LIBHDBDIR=	${_LIB_OBJTOP}/kerberos5/lib/libhdb
+LIBHEIMBASEDIR=	${_LIB_OBJTOP}/kerberos5/lib/libheimbase
+LIBHEIMIPCCDIR=	${_LIB_OBJTOP}/kerberos5/lib/libheimipcc
+LIBHEIMIPCSDIR=	${_LIB_OBJTOP}/kerberos5/lib/libheimipcs
+LIBHEIMNTLMDIR=	${_LIB_OBJTOP}/kerberos5/lib/libheimntlm
+LIBHX509DIR=	${_LIB_OBJTOP}/kerberos5/lib/libhx509
+LIBKADM5CLNTDIR=	${_LIB_OBJTOP}/kerberos5/lib/libkadm5clnt
+LIBKADM5SRVDIR=	${_LIB_OBJTOP}/kerberos5/lib/libkadm5srv
+LIBKAFS5DIR=	${_LIB_OBJTOP}/kerberos5/lib/libkafs5
+LIBKDCDIR=	${_LIB_OBJTOP}/kerberos5/lib/libkdc
+LIBKRB5DIR=	${_LIB_OBJTOP}/kerberos5/lib/libkrb5
+LIBROKENDIR=	${_LIB_OBJTOP}/kerberos5/lib/libroken
+LIBWINDDIR=	${_LIB_OBJTOP}/kerberos5/lib/libwind
+LIBATF_CDIR=	${_LIB_OBJTOP}/lib/atf/libatf-c
+LIBATF_CXXDIR=	${_LIB_OBJTOP}/lib/atf/libatf-c++
+LIBGMOCKDIR=	${_LIB_OBJTOP}/lib/googletest/gmock
+LIBGMOCK_MAINDIR=	${_LIB_OBJTOP}/lib/googletest/gmock_main
+LIBGTESTDIR=	${_LIB_OBJTOP}/lib/googletest/gtest
+LIBGTEST_MAINDIR=	${_LIB_OBJTOP}/lib/googletest/gtest_main
+LIBALIASDIR=	${_LIB_OBJTOP}/lib/libalias/libalias
+LIBBLACKLISTDIR=	${_LIB_OBJTOP}/lib/libblacklist
+LIBBLOCKSRUNTIMEDIR=	${_LIB_OBJTOP}/lib/libblocksruntime
+LIBBSNMPDIR=	${_LIB_OBJTOP}/lib/libbsnmp/libbsnmp
+LIBCASPERDIR=	${_LIB_OBJTOP}/lib/libcasper/libcasper
+LIBCAP_DNSDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_dns
+LIBCAP_GRPDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_grp
+LIBCAP_NETDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_net
+LIBCAP_PWDDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_pwd
+LIBCAP_SYSCTLDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_sysctl
+LIBCAP_SYSLOGDIR=	${_LIB_OBJTOP}/lib/libcasper/services/cap_syslog
+LIBCBORDIR=	${_LIB_OBJTOP}/lib/libcbor
+LIBBSDXMLDIR=	${_LIB_OBJTOP}/lib/libexpat
+LIBFIDO2DIR=	${_LIB_OBJTOP}/lib/libfido2
+LIBKVMDIR=	${_LIB_OBJTOP}/lib/libkvm
+LIBPTHREADDIR=	${_LIB_OBJTOP}/lib/libthr
+LIBMDIR=	${_LIB_OBJTOP}/lib/msun
+LIBFORMWDIR=	${_LIB_OBJTOP}/lib/ncurses/form
+LIBMENUWDIR=	${_LIB_OBJTOP}/lib/ncurses/menu
+LIBNCURSESWDIR=	${_LIB_OBJTOP}/lib/ncurses/ncurses
+LIBTINFOWDIR=	${_LIB_OBJTOP}/lib/ncurses/tinfo
+LIBPANELWDIR=	${_LIB_OBJTOP}/lib/ncurses/panel
+LIBCRYPTODIR=	${_LIB_OBJTOP}/secure/lib/libcrypto
+LIBSPLDIR=	${_LIB_OBJTOP}/cddl/lib/libspl
+LIBSSHDIR=	${_LIB_OBJTOP}/secure/lib/libssh
+LIBSSLDIR=	${_LIB_OBJTOP}/secure/lib/libssl
+LIBTEKENDIR=	${_LIB_OBJTOP}/sys/teken/libteken
+LIBEGACYDIR=	${_LIB_OBJTOP}/tools/build
+LIBLNDIR=	${_LIB_OBJTOP}/usr.bin/lex/lib
 
 LIBTERMCAPWDIR=	${LIBTINFOWDIR}
 

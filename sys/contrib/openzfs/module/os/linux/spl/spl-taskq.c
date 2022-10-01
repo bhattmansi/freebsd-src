@@ -32,26 +32,30 @@
 #include <linux/cpuhotplug.h>
 #endif
 
-int spl_taskq_thread_bind = 0;
+static int spl_taskq_thread_bind = 0;
 module_param(spl_taskq_thread_bind, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_bind, "Bind taskq thread to CPU by default");
 
 
-int spl_taskq_thread_dynamic = 1;
+static int spl_taskq_thread_dynamic = 1;
 module_param(spl_taskq_thread_dynamic, int, 0444);
 MODULE_PARM_DESC(spl_taskq_thread_dynamic, "Allow dynamic taskq threads");
 
-int spl_taskq_thread_priority = 1;
+static int spl_taskq_thread_priority = 1;
 module_param(spl_taskq_thread_priority, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_priority,
 	"Allow non-default priority for taskq threads");
 
-int spl_taskq_thread_sequential = 4;
+static int spl_taskq_thread_sequential = 4;
 module_param(spl_taskq_thread_sequential, int, 0644);
 MODULE_PARM_DESC(spl_taskq_thread_sequential,
 	"Create new taskq threads after N sequential tasks");
 
-/* Global system-wide dynamic task queue available for all consumers */
+/*
+ * Global system-wide dynamic task queue available for all consumers. This
+ * taskq is not intended for long-running tasks; instead, a dedicated taskq
+ * should be created.
+ */
 taskq_t *system_taskq;
 EXPORT_SYMBOL(system_taskq);
 /* Global dynamic task queue for long delay */
@@ -1298,8 +1302,10 @@ spl_taskq_expand(unsigned int cpu, struct hlist_node *node)
 	ASSERT(tq);
 	spin_lock_irqsave_nested(&tq->tq_lock, flags, tq->tq_lock_class);
 
-	if (!(tq->tq_flags & TASKQ_ACTIVE))
-		goto out;
+	if (!(tq->tq_flags & TASKQ_ACTIVE)) {
+		spin_unlock_irqrestore(&tq->tq_lock, flags);
+		return (err);
+	}
 
 	ASSERT(tq->tq_flags & TASKQ_THREADS_CPU_PCT);
 	int nthreads = MIN(tq->tq_cpu_pct, 100);
@@ -1308,13 +1314,12 @@ spl_taskq_expand(unsigned int cpu, struct hlist_node *node)
 
 	if (!((tq->tq_flags & TASKQ_DYNAMIC) && spl_taskq_thread_dynamic) &&
 	    tq->tq_maxthreads > tq->tq_nthreads) {
-		ASSERT3U(tq->tq_maxthreads, ==, tq->tq_nthreads + 1);
+		spin_unlock_irqrestore(&tq->tq_lock, flags);
 		taskq_thread_t *tqt = taskq_thread_create(tq);
 		if (tqt == NULL)
 			err = -1;
+		return (err);
 	}
-
-out:
 	spin_unlock_irqrestore(&tq->tq_lock, flags);
 	return (err);
 }
@@ -1374,7 +1379,7 @@ spl_taskq_init(void)
 	system_taskq = taskq_create("spl_system_taskq", MAX(boot_ncpus, 64),
 	    maxclsyspri, boot_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
 	if (system_taskq == NULL)
-		return (1);
+		return (-ENOMEM);
 
 	system_delay_taskq = taskq_create("spl_delay_taskq", MAX(boot_ncpus, 4),
 	    maxclsyspri, boot_ncpus, INT_MAX, TASKQ_PREPOPULATE|TASKQ_DYNAMIC);
@@ -1383,7 +1388,7 @@ spl_taskq_init(void)
 		cpuhp_remove_multi_state(spl_taskq_cpuhp_state);
 #endif
 		taskq_destroy(system_taskq);
-		return (1);
+		return (-ENOMEM);
 	}
 
 	dynamic_taskq = taskq_create("spl_dynamic_taskq", 1,
@@ -1394,7 +1399,7 @@ spl_taskq_init(void)
 #endif
 		taskq_destroy(system_taskq);
 		taskq_destroy(system_delay_taskq);
-		return (1);
+		return (-ENOMEM);
 	}
 
 	/*

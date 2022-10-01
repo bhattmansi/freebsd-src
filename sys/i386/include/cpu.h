@@ -41,6 +41,9 @@
 /*
  * Definitions unique to i386 cpu support.
  */
+#ifdef _KERNEL
+#include <sys/systm.h>			/* For cpu_ticks(). */
+#endif
 #include <machine/psl.h>
 #include <machine/frame.h>
 #include <machine/segments.h>
@@ -75,7 +78,6 @@ void	cpu_halt(void);
 void	cpu_lock_delay(void);
 void	cpu_reset(void);
 void	fork_trampoline(void);
-void	swi_vm(void *);
 
 /*
  * Return contents of in-cpu fast counter as a sort of "bogo-time"

@@ -28,8 +28,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_SYSFS_H_
-#define	_LINUX_SYSFS_H_
+#ifndef	_LINUXKPI_LINUX_SYSFS_H_
+#define	_LINUXKPI_LINUX_SYSFS_H_
 
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -246,7 +246,7 @@ sysfs_unmerge_group(struct kobject *kobj, const struct attribute_group *grp)
 	struct attribute **attr;
 	struct sysctl_oid *oidp;
 
-	SLIST_FOREACH(oidp, SYSCTL_CHILDREN(kobj->oidp), oid_link) {
+	SYSCTL_FOREACH(oidp, SYSCTL_CHILDREN(kobj->oidp)) {
 		if (strcmp(oidp->oid_name, grp->name) != 0)
 			continue;
 		for (attr = grp->attrs; *attr != NULL; attr++) {
@@ -297,4 +297,4 @@ sysfs_streq(const char *s1, const char *s2)
 
 #define sysfs_attr_init(attr) do {} while(0)
 
-#endif	/* _LINUX_SYSFS_H_ */
+#endif	/* _LINUXKPI_LINUX_SYSFS_H_ */

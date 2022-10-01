@@ -16,11 +16,11 @@ SRCS=	linux_fork.c linux${SFX}_dummy_machdep.c linux_file.c linux_event.c \
 	linux${SFX}_machdep.c linux_misc.c linux_signal.c \
 	linux_socket.c linux_stats.c linux_sysctl.c linux${SFX}_sysent.c \
 	linux${SFX}_sysvec.c linux_uid16.c linux_time.c \
-	linux_timer.c linux_vdso.c \
+	linux_timer.c linux_vdso.c linux_rseq.c \
 	opt_inet6.h opt_compat.h opt_posix.h opt_usb.h vnode_if.h \
 	device_if.h bus_if.h
 .if ${MACHINE_CPUARCH} == "i386" || ${MACHINE_CPUARCH} == "amd64"
-SRCS+=	linux_dummy_x86.c linux_vdso_tsc_selector_x86.c
+SRCS+=	linux_dummy_x86.c
 VDSODEPS=linux_vdso_gettc_x86.inc
 .endif
 .if ${MACHINE_CPUARCH} == "amd64"
@@ -40,8 +40,9 @@ SRCS+=	opt_apic.h
 OBJS=	linux${SFX}_vdso.so
 
 .if ${MACHINE_CPUARCH} == "i386"
-SRCS+=	linux_ptrace.c imgact_linux.c linux_util.c linux_mib.c linux_mmap.c \
-	linux_dummy.c linux_emul.c linux_errno.c opt_cpu.h linux.c
+SRCS+=	linux_ptrace_machdep.c imgact_linux.c linux_util.c linux_mib.c \
+	linux_mmap.c linux_dummy.c linux_emul.c linux_errno.c opt_cpu.h linux.c \
+	linux_x86.c linux_vdso_selector_x86.c
 .endif
 
 .if ${MACHINE_CPUARCH} == "i386"
@@ -112,5 +113,7 @@ linux${SFX}_genassym.o: offset.inc
 .if !defined(KERNBUILDDIR)
 .warning Building Linuxulator outside of a kernel does not make sense
 .endif
+
+EXPORT_SYMS=	YES
 
 .include <bsd.kmod.mk>

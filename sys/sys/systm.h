@@ -44,6 +44,7 @@
 #include <machine/atomic.h>
 #include <machine/cpufunc.h>
 #include <sys/callout.h>
+#include <sys/kassert.h>
 #include <sys/queue.h>
 #include <sys/stdint.h>		/* for people using printf mainly */
 
@@ -53,9 +54,6 @@ __NULLABILITY_PRAGMA_PUSH
 extern int cold;		/* nonzero if we are doing a cold boot */
 extern int suspend_blocked;	/* block suspend due to pending shutdown */
 extern int rebooting;		/* kern_reboot() has been called. */
-extern const char *panicstr;	/* panic message */
-extern bool panicked;
-#define	KERNEL_PANICKED()	__predict_false(panicked)
 extern char version[];		/* system version */
 extern char compiler_version[];	/* compiler version */
 extern char copyright[];	/* system copyright */
@@ -86,85 +84,7 @@ enum VM_GUEST { VM_GUEST_NO = 0, VM_GUEST_VM, VM_GUEST_XEN, VM_GUEST_HV,
 		VM_GUEST_VMWARE, VM_GUEST_KVM, VM_GUEST_BHYVE, VM_GUEST_VBOX,
 		VM_GUEST_PARALLELS, VM_LAST };
 
-#ifdef	INVARIANTS		/* The option is always available */
-#define	VNASSERT(exp, vp, msg) do {					\
-	if (__predict_false(!(exp))) {					\
-		vn_printf(vp, "VNASSERT failed: %s not true at %s:%d (%s)\n",\
-		   #exp, __FILE__, __LINE__, __func__);	 		\
-		kassert_panic msg;					\
-	}								\
-} while (0)
-#define	VNPASS(exp, vp)	do {						\
-	const char *_exp = #exp;					\
-	VNASSERT(exp, vp, ("condition %s not met at %s:%d (%s)",	\
-	    _exp, __FILE__, __LINE__, __func__));			\
-} while (0)
-#define	__assert_unreachable() \
-	panic("executing segment marked as unreachable at %s:%d (%s)\n", \
-	    __FILE__, __LINE__, __func__)
-#else
-#define	VNASSERT(exp, vp, msg) do { \
-} while (0)
-#define	VNPASS(exp, vp) do { \
-} while (0)
-#define	__assert_unreachable()	__unreachable()
-#endif
-
-#ifndef CTASSERT	/* Allow lint to override */
-#define	CTASSERT(x)	_Static_assert(x, "compile-time assertion failed")
-#endif
 #endif /* KERNEL */
-
-/*
- * These functions need to be declared before the KASSERT macro is invoked in
- * !KASSERT_PANIC_OPTIONAL builds, so their declarations are sort of out of
- * place compared to other function definitions in this header.  On the other
- * hand, this header is a bit disorganized anyway.
- */
-void	panic(const char *, ...) __dead2 __printflike(1, 2);
-void	vpanic(const char *, __va_list) __dead2 __printflike(1, 0);
-
-
-#if defined(_STANDALONE)
-struct ucred;
-/*
- * Until we have more experience with KASSERTS that are called
- * from the boot loader, they are off. The bootloader does this
- * a little differently than the kernel (we just call printf atm).
- * we avoid most of the common functions in the boot loader, so
- * declare printf() here too.
- */
-int	printf(const char *, ...) __printflike(1, 2);
-#  define kassert_panic printf
-#else /* !_STANDALONE */
-#  if defined(WITNESS) || defined(INVARIANT_SUPPORT)
-#    ifdef KASSERT_PANIC_OPTIONAL
-void	kassert_panic(const char *fmt, ...)  __printflike(1, 2);
-#    else
-#      define kassert_panic	panic
-#    endif /* KASSERT_PANIC_OPTIONAL */
-#  endif /* defined(WITNESS) || defined(INVARIANT_SUPPORT) */
-#endif /* _STANDALONE */
-
-#if defined(INVARIANTS) || defined(_STANDALONE)
-#define	KASSERT(exp,msg) do {						\
-	if (__predict_false(!(exp)))					\
-		kassert_panic msg;					\
-} while (0)
-#else /* !INVARIANTS && !_STANDALONE */
-#define	KASSERT(exp,msg) do { \
-} while (0)
-#endif /* INVARIANTS || _STANDALONE */
-
-/*
- * Helpful macros for quickly coming up with assertions with informative
- * panic messages.
- */
-#define MPASS(ex)		MPASS4(ex, #ex, __FILE__, __LINE__)
-#define MPASS2(ex, what)	MPASS4(ex, what, __FILE__, __LINE__)
-#define MPASS3(ex, file, line)	MPASS4(ex, #ex, file, line)
-#define MPASS4(ex, what, file, line)					\
-	KASSERT((ex), ("Assertion %s failed at %s:%d", what, file, line))
 
 /*
  * Align variables.
@@ -173,39 +93,14 @@ void	kassert_panic(const char *fmt, ...)  __printflike(1, 2);
 #define	__read_frequently	__section(".data.read_frequently")
 #define	__exclusive_cache_line	__aligned(CACHE_LINE_SIZE) \
 				    __section(".data.exclusive_cache_line")
+#if defined(_STANDALONE)
+struct ucred;
+#endif
+
 #ifdef _KERNEL
 #include <sys/param.h>		/* MAXCPU */
 #include <sys/pcpu.h>		/* curthread */
 #include <sys/kpilite.h>
-
-/*
- * Assert that a pointer can be loaded from memory atomically.
- *
- * This assertion enforces stronger alignment than necessary.  For example,
- * on some architectures, atomicity for unaligned loads will depend on
- * whether or not the load spans multiple cache lines.
- */
-#define	ASSERT_ATOMIC_LOAD_PTR(var, msg)				\
-	KASSERT(sizeof(var) == sizeof(void *) &&			\
-	    ((uintptr_t)&(var) & (sizeof(void *) - 1)) == 0, msg)
-
-/*
- * Assert that a thread is in critical(9) section.
- */
-#define	CRITICAL_ASSERT(td)						\
-	KASSERT((td)->td_critnest >= 1, ("Not in critical section"))
-
-/*
- * If we have already panic'd and this is the thread that called
- * panic(), then don't block on any mutexes but silently succeed.
- * Otherwise, the kernel will deadlock since the scheduler isn't
- * going to run the thread that holds any lock we need.
- */
-#define	SCHEDULER_STOPPED_TD(td)  ({					\
-	MPASS((td) == curthread);					\
-	__predict_false((td)->td_stopsched);				\
-})
-#define	SCHEDULER_STOPPED() SCHEDULER_STOPPED_TD(curthread)
 
 extern int osreldate;
 
@@ -255,7 +150,6 @@ void	*hashinit_flags(int count, struct malloc_type *type,
 void	*phashinit(int count, struct malloc_type *type, u_long *nentries);
 void	*phashinit_flags(int count, struct malloc_type *type, u_long *nentries,
     int flags);
-void	g_waitidle(void);
 
 void	cpu_flush_dcache(void *, size_t);
 void	cpu_rootconf(void);
@@ -273,7 +167,7 @@ void	tablefull(const char *);
 extern int (*lkpi_alloc_current)(struct thread *, int);
 int linux_alloc_current_noop(struct thread *, int);
 
-#if defined(KLD_MODULE) || defined(KTR_CRITICAL) || !defined(_KERNEL) || defined(GENOFFSET)
+#if (defined(KLD_MODULE) && !defined(KLD_TIED)) || defined(KTR_CRITICAL) || !defined(_KERNEL) || defined(GENOFFSET)
 #define critical_enter() critical_enter_KBI()
 #define critical_exit() critical_exit_KBI()
 #else
@@ -465,13 +359,10 @@ int	SAN_INTERCEPTOR(casueword)(volatile u_long *p, u_long oldval,
 #endif /* !SAN_RUNTIME */
 #endif /* SAN_NEEDS_INTERCEPTORS && !KCSAN */
 
-void	realitexpire(void *);
-
-int	sysbeep(int hertz, int period);
+int	sysbeep(int hertz, sbintime_t duration);
 
 void	hardclock(int cnt, int usermode);
 void	hardclock_sync(int cpu);
-void	softclock(void *);
 void	statclock(int cnt, int usermode);
 void	profclock(int cnt, int usermode, uintfptr_t pc);
 
@@ -513,7 +404,7 @@ int	getenv_array(const char *name, void *data, int size, int *psize,
 #define	GETENV_SIGNED	true	/* negative numbers allowed */
 
 typedef uint64_t (cpu_tick_f)(void);
-void set_cputicker(cpu_tick_f *func, uint64_t freq, unsigned var);
+void set_cputicker(cpu_tick_f *func, uint64_t freq, bool isvariable);
 extern cpu_tick_f *cpu_ticks;
 uint64_t cpu_tickrate(void);
 uint64_t cputick2usec(uint64_t tick);
@@ -557,8 +448,11 @@ int	msleep_spin_sbt(const void * _Nonnull chan, struct mtx *mtx,
 	    0, C_HARDCLOCK)
 int	pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr,
 	    int flags);
-#define	pause(wmesg, timo)						\
-	pause_sbt((wmesg), tick_sbt * (timo), 0, C_HARDCLOCK)
+static __inline int
+pause(const char *wmesg, int timo)
+{
+	return (pause_sbt(wmesg, tick_sbt * timo, 0, C_HARDCLOCK));
+}
 #define	pause_sig(wmesg, timo)						\
 	pause_sbt((wmesg), tick_sbt * (timo), 0, C_HARDCLOCK | C_CATCH)
 #define	tsleep(chan, pri, wmesg, timo)					\
@@ -604,6 +498,7 @@ int root_mounted(void);
  * Unit number allocation API. (kern/subr_unit.c)
  */
 struct unrhdr;
+#define	UNR_NO_MTX	((void *)(uintptr_t)-1)
 struct unrhdr *new_unrhdr(int low, int high, struct mtx *mutex);
 void init_unrhdr(struct unrhdr *uh, int low, int high, struct mtx *mutex);
 void delete_unrhdr(struct unrhdr *uh);
@@ -660,10 +555,16 @@ void _gone_in_dev(device_t dev, int major, const char *msg);
 #define gone_in(major, msg)		__gone_ok(major, msg) _gone_in(major, msg)
 #define gone_in_dev(dev, major, msg)	__gone_ok(major, msg) _gone_in_dev(dev, major, msg)
 
-#if defined(INVARIANTS) || defined(WITNESS)
+#ifdef INVARIANTS
 #define	__diagused
 #else
 #define	__diagused	__unused
+#endif
+
+#ifdef WITNESS
+#define	__witness_used
+#else
+#define	__witness_used	__unused
 #endif
 
 #endif /* _KERNEL */

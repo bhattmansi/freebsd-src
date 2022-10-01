@@ -309,14 +309,14 @@ nfs_statfs(struct mount *mp, struct statfs *sbp)
 	if (NFSHASNFSV3(nmp) && !NFSHASGOTFSINFO(nmp)) {
 		mtx_unlock(&nmp->nm_mtx);
 		error = nfsrpc_fsinfo(vp, &fs, td->td_ucred, td, &nfsva,
-		    &attrflag, NULL);
+		    &attrflag);
 		if (!error)
 			gotfsinfo = 1;
 	} else
 		mtx_unlock(&nmp->nm_mtx);
 	if (!error)
 		error = nfsrpc_statfs(vp, &sb, &fs, td->td_ucred, td, &nfsva,
-		    &attrflag, NULL);
+		    &attrflag);
 	if (error != 0)
 		NFSCL_DEBUG(2, "statfs=%d\n", error);
 	if (attrflag == 0) {
@@ -338,7 +338,7 @@ nfs_statfs(struct mount *mp, struct statfs *sbp)
 			nfsva.na_vattr.va_size = 512 * 1024;
 		}
 	}
-	(void) nfscl_loadattrcache(&vp, &nfsva, NULL, NULL, 0, 1);
+	(void) nfscl_loadattrcache(&vp, &nfsva, NULL, 0, 1);
 	if (!error) {
 	    mtx_lock(&nmp->nm_mtx);
 	    if (gotfsinfo || (nmp->nm_flag & NFSMNT_NFSV4))
@@ -370,11 +370,10 @@ ncl_fsinfo(struct nfsmount *nmp, struct vnode *vp, struct ucred *cred,
 	struct nfsvattr nfsva;
 	int error, attrflag;
 
-	error = nfsrpc_fsinfo(vp, &fs, cred, td, &nfsva, &attrflag, NULL);
+	error = nfsrpc_fsinfo(vp, &fs, cred, td, &nfsva, &attrflag);
 	if (!error) {
 		if (attrflag)
-			(void) nfscl_loadattrcache(&vp, &nfsva, NULL, NULL, 0,
-			    1);
+			(void) nfscl_loadattrcache(&vp, &nfsva, NULL, 0, 1);
 		mtx_lock(&nmp->nm_mtx);
 		nfscl_loadfsinfo(nmp, &fs);
 		mtx_unlock(&nmp->nm_mtx);
@@ -1688,7 +1687,7 @@ mountnfs(struct nfs_args *argp, struct mount *mp, struct sockaddr *nam,
 			nfsva.na_vattr.va_size = 512 * 1024;
 			lease = 60;
 		}
-		(void) nfscl_loadattrcache(vpp, &nfsva, NULL, NULL, 0, 1);
+		(void) nfscl_loadattrcache(vpp, &nfsva, NULL, 0, 1);
 		if ((argp->flags & NFSMNT_NFSV4) != 0) {
 			NFSCL_DEBUG(3, "lease=%d\n", (int)lease);
 			NFSLOCKCLSTATE();
@@ -1767,8 +1766,11 @@ nfs_unmount(struct mount *mp, int mntflags)
 	struct nfsmount *nmp;
 	int error, flags = 0, i, trycnt = 0;
 	struct nfsclds *dsp, *tdsp;
+	struct nfscldeleg *dp, *ndp;
+	struct nfscldeleghead dh;
 
 	td = curthread;
+	TAILQ_INIT(&dh);
 
 	if (mntflags & MNT_FORCE)
 		flags |= FORCECLOSE;
@@ -1792,7 +1794,7 @@ nfs_unmount(struct mount *mp, int mntflags)
 		if (error)
 			goto out;
 		/* For a forced close, get rid of the renew thread now */
-		nfscl_umount(nmp, td);
+		nfscl_umount(nmp, td, &dh);
 	}
 	/* We hold 1 extra ref on the root vnode; see comment in mountnfs(). */
 	do {
@@ -1807,7 +1809,7 @@ nfs_unmount(struct mount *mp, int mntflags)
 	 * We are now committed to the unmount.
 	 */
 	if ((mntflags & MNT_FORCE) == 0)
-		nfscl_umount(nmp, td);
+		nfscl_umount(nmp, td, NULL);
 	else {
 		mtx_lock(&nmp->nm_mtx);
 		nmp->nm_privflag |= NFSMNTP_FORCEDISM;
@@ -1849,6 +1851,12 @@ nfs_unmount(struct mount *mp, int mntflags)
 	}
 	free(nmp->nm_tlscertname, M_NEWNFSMNT);
 	free(nmp, M_NEWNFSMNT);
+
+	/* Free up the delegation structures for forced dismounts. */
+	TAILQ_FOREACH_SAFE(dp, &dh, nfsdl_list, ndp) {
+		TAILQ_REMOVE(&dh, dp, nfsdl_list);
+		free(dp, M_NFSCLDELEG);
+	}
 out:
 	return (error);
 }
@@ -2123,8 +2131,8 @@ void nfscl_retopts(struct nfsmount *nmp, char *buffer, size_t buflen)
 	    ",noncontigwr", &buf, &blen);
 	nfscl_printopt(nmp, (nmp->nm_flag & (NFSMNT_NOLOCKD | NFSMNT_NFSV4)) ==
 	    0, ",lockd", &buf, &blen);
-	nfscl_printopt(nmp, (nmp->nm_flag & (NFSMNT_NOLOCKD | NFSMNT_NFSV4)) ==
-	    NFSMNT_NOLOCKD, ",nolockd", &buf, &blen);
+	nfscl_printopt(nmp, (nmp->nm_flag & NFSMNT_NOLOCKD) != 0, ",nolockd",
+	    &buf, &blen);
 	nfscl_printopt(nmp, (nmp->nm_flag & NFSMNT_RDIRPLUS) != 0, ",rdirplus",
 	    &buf, &blen);
 	nfscl_printopt(nmp, (nmp->nm_flag & NFSMNT_KERB) == 0, ",sec=sys",

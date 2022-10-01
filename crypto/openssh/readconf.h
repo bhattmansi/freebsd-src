@@ -1,5 +1,4 @@
-/* $OpenBSD: readconf.h,v 1.144 2021/07/23 04:04:52 djm Exp $ */
-/* $FreeBSD$ */
+/* $OpenBSD: readconf.h,v 1.146 2021/12/19 22:14:47 djm Exp $ */
 
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
@@ -170,8 +169,6 @@ typedef struct {
 	char   *hostbased_accepted_algos;
 	char   *pubkey_accepted_algos;
 
-	char   *version_addendum; /* Appended to SSH banner */
-
 	char   *jump_user;
 	char   *jump_host;
 	int	jump_port;
@@ -181,6 +178,11 @@ typedef struct {
 
 	char	*ignored_unknown; /* Pattern list of unknown tokens to ignore */
 }       Options;
+
+#define SSH_PUBKEY_AUTH_NO	0x00
+#define SSH_PUBKEY_AUTH_UNBOUND	0x01
+#define SSH_PUBKEY_AUTH_HBOUND	0x02
+#define SSH_PUBKEY_AUTH_ALL	0x03
 
 #define SSH_CANONICALISE_NO	0
 #define SSH_CANONICALISE_YES	1
@@ -231,6 +233,7 @@ int	 parse_jump(const char *, Options *, int);
 int	 parse_ssh_uri(const char *, char **, char **, int *);
 int	 default_ssh_port(void);
 int	 option_clear_or_none(const char *);
+int	 config_has_permitted_cnames(Options *);
 void	 dump_client_config(Options *o, const char *host);
 
 void	 add_local_forward(Options *, const struct Forward *);

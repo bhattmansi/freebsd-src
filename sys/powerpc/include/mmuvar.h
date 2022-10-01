@@ -38,7 +38,7 @@ typedef	void	(*pmap_kenter_attr_t)(vm_offset_t, vm_paddr_t, vm_memattr_t);
 typedef	void	(*pmap_kremove_t)(vm_offset_t);
 typedef	void	*(*pmap_mapdev_t)(vm_paddr_t, vm_size_t);
 typedef	void	*(*pmap_mapdev_attr_t)(vm_paddr_t, vm_size_t, vm_memattr_t);
-typedef	void	(*pmap_unmapdev_t)(vm_offset_t, vm_size_t);
+typedef	void	(*pmap_unmapdev_t)(void *, vm_size_t);
 typedef	void	(*pmap_page_set_memattr_t)(vm_page_t, vm_memattr_t);
 typedef	int	(*pmap_change_attr_t)(vm_offset_t, vm_size_t, vm_memattr_t);
 typedef	int	(*pmap_map_user_ptr_t)(pmap_t, volatile const void *,
@@ -96,7 +96,7 @@ typedef	void	(*pmap_sync_icache_t)(pmap_t, vm_offset_t, vm_size_t);
 typedef	void	(*pmap_dumpsys_map_chunk_t)(vm_paddr_t, size_t, void **);
 typedef	void	(*pmap_dumpsys_unmap_chunk_t)(vm_paddr_t, size_t, void *);
 typedef	void	(*pmap_dumpsys_pa_init_t)(void);
-typedef	size_t	(*pmap_dumpsys_scan_pmap_t)(void);
+typedef	size_t	(*pmap_dumpsys_scan_pmap_t)(struct bitset *dump_bitset);
 typedef	void	*(*pmap_dumpsys_dump_pmap_init_t)(unsigned);
 typedef	void	*(*pmap_dumpsys_dump_pmap_t)(void *, void *, u_long *);
 typedef	vm_offset_t	(*pmap_quick_enter_page_t)(vm_page_t);

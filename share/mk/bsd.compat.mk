@@ -30,7 +30,7 @@ LIB32CPUFLAGS=	-march=${COMPAT_CPUTYPE}
 .endif
 .if ${COMPAT_COMPILER_TYPE} == gcc
 .else
-LIB32CPUFLAGS+=	-target x86_64-unknown-freebsd14.0
+LIB32CPUFLAGS+=	-target x86_64-unknown-freebsd${OS_REVISION}
 .endif
 LIB32CPUFLAGS+=	-m32
 LIB32_MACHINE=	i386
@@ -51,39 +51,13 @@ LIB32CPUFLAGS=	-mcpu=${COMPAT_CPUTYPE}
 .if ${COMPAT_COMPILER_TYPE} == "gcc"
 LIB32CPUFLAGS+=	-m32
 .else
-LIB32CPUFLAGS+=	-target powerpc-unknown-freebsd14.0
+LIB32CPUFLAGS+=	-target powerpc-unknown-freebsd${OS_REVISION}
 .endif
 
 LIB32_MACHINE=	powerpc
 LIB32_MACHINE_ARCH=	powerpc
 LIB32WMAKEFLAGS=	\
 		LD="${XLD} -m elf32ppc_fbsd"
-
-.elif ${COMPAT_ARCH:Mmips64*} != ""
-HAS_COMPAT=32
-.if ${COMPAT_COMPILER_TYPE} == gcc
-.if empty(COMPAT_CPUTYPE)
-LIB32CPUFLAGS=	-march=mips3
-.else
-LIB32CPUFLAGS=	-march=${COMPAT_CPUTYPE}
-.endif
-.else
-.if ${COMPAT_ARCH:Mmips64el*} != ""
-LIB32CPUFLAGS=  -target mipsel-unknown-freebsd14.0
-.else
-LIB32CPUFLAGS=  -target mips-unknown-freebsd14.0
-.endif
-.endif
-LIB32CPUFLAGS+= -mabi=32
-LIB32_MACHINE=	mips
-LIB32_MACHINE_ARCH:=	${COMPAT_ARCH:S/64//}
-.if ${COMPAT_ARCH:Mmips64el*} != ""
-_EMULATION=	elf32ltsmip_fbsd
-.else
-_EMULATION=	elf32btsmip_fbsd
-.endif
-LIB32WMAKEFLAGS= LD="${XLD} -m ${_EMULATION}"
-LIB32LDFLAGS=	-Wl,-m${_EMULATION}
 .endif
 
 LIB32WMAKEFLAGS+= NM="${XNM}"
@@ -94,24 +68,12 @@ LIB32DTRACE=	${DTRACE} -32
 LIB32WMAKEFLAGS+=	-DCOMPAT_32BIT
 
 # -------------------------------------------------------------------
-# soft-fp world
-.if ${COMPAT_ARCH:Marmv[67]*} != ""
-HAS_COMPAT=SOFT
-LIBSOFTCFLAGS=        -DCOMPAT_SOFTFP
-LIBSOFTCPUFLAGS= -mfloat-abi=softfp
-LIBSOFT_MACHINE=	arm
-LIBSOFT_MACHINE_ARCH=	${COMPAT_ARCH}
-LIBSOFTWMAKEENV= CPUTYPE=soft
-LIBSOFTWMAKEFLAGS=        -DCOMPAT_SOFTFP
-.endif
-
-# -------------------------------------------------------------------
 # In the program linking case, select LIBCOMPAT
 .if defined(NEED_COMPAT)
 .ifndef HAS_COMPAT
-.warning NEED_COMPAT defined, but no LIBCOMPAT is available (COMPAT_ARCH == ${COMPAT_ARCH}
+.warning NEED_COMPAT defined, but no LIBCOMPAT is available (COMPAT_ARCH == ${COMPAT_ARCH})
 .elif !${HAS_COMPAT:M${NEED_COMPAT}} && ${NEED_COMPAT} != "any"
-.error NEED_COMPAT (${NEED_COMPAT}) defined, but not in HAS_COMPAT ($HAS_COMPAT)
+.error NEED_COMPAT (${NEED_COMPAT}) defined, but not in HAS_COMPAT (${HAS_COMPAT})
 .elif ${NEED_COMPAT} == "any"
 .endif
 .ifdef WANT_COMPAT
@@ -128,41 +90,40 @@ _LIBCOMPAT:=	${WANT_COMPAT}
 .endif
 .endif
 
-
 # -------------------------------------------------------------------
 # Generic code for each type.
 # Set defaults based on type.
 libcompat=	${_LIBCOMPAT:tl}
 _LIBCOMPAT_MAKEVARS=	_OBJTOP TMP CPUFLAGS CFLAGS CXXFLAGS LDFLAGS \
-			_MACHINE _MACHINE_ARCH WMAKEENV WMAKEFLAGS WMAKE
+			_MACHINE _MACHINE_ARCH \
+			WMAKEENV WMAKEFLAGS WMAKE WORLDTMP
 .for _var in ${_LIBCOMPAT_MAKEVARS}
 .if !empty(LIB${_LIBCOMPAT}${_var})
 LIBCOMPAT${_var}?=	${LIB${_LIBCOMPAT}${_var}}
 .endif
 .endfor
 
+WORLDTMP?=		${SYSROOT}
+
 # Shared flags
 LIBCOMPAT_OBJTOP?=	${OBJTOP}/obj-lib${libcompat}
-LIBCOMPATTMP?=		${LIBCOMPAT_OBJTOP}/tmp
 
 LIBCOMPATCFLAGS+=	${LIBCOMPATCPUFLAGS} \
-			--sysroot=${LIBCOMPATTMP} \
+			--sysroot=${WORLDTMP} \
 			${BFLAGS}
 
-LIBCOMPATLDFLAGS+=	-L${LIBCOMPATTMP}/usr/lib${libcompat}
+LIBCOMPATLDFLAGS+=	-L${WORLDTMP}/usr/lib${libcompat}
 
 LIBCOMPATWMAKEENV+=	MACHINE=${LIBCOMPAT_MACHINE}
 LIBCOMPATWMAKEENV+=	MACHINE_ARCH=${LIBCOMPAT_MACHINE_ARCH}
 
-# -B is needed to find /usr/lib32/crti.o for GCC and /usr/libsoft/crti.o for
-# Clang/GCC.
-LIBCOMPATCFLAGS+=	-B${LIBCOMPATTMP}/usr/lib${libcompat}
+# -B is needed to find /usr/lib32/crti.o for gcc.
+LIBCOMPATCFLAGS+=	-B${WORLDTMP}/usr/lib${libcompat}
 
 .if defined(WANT_COMPAT)
 LIBDIR_BASE:=	/usr/lib${libcompat}
+LIBDATADIR:=	/usr/lib${libcompat}
 _LIB_OBJTOP=	${LIBCOMPAT_OBJTOP}
-LIBDESTDIR:=	${LIBCOMPATTMP}
-SYSROOT:=	${LIBCOMPATTMP}
 CFLAGS+=	${LIBCOMPATCFLAGS}
 LDFLAGS+=	${CFLAGS} ${LIBCOMPATLDFLAGS}
 MACHINE=	${LIBCOMPAT_MACHINE}

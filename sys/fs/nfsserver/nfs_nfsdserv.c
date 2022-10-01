@@ -198,7 +198,7 @@ nfsrvd_access(struct nfsrv_descript *nd, __unused int isdgram,
 		    NFSACCCHK_NOOVERRIDE, NFSACCCHK_VPISLOCKED, &supported))
 			nfsmode &= ~NFSACCESS_DELETE;
 	}
-	if (vnode_vtype(vp) == VDIR)
+	if (vp->v_type == VDIR)
 		testmode = NFSACCESS_LOOKUP;
 	else
 		testmode = NFSACCESS_EXECUTE;
@@ -438,10 +438,10 @@ nfsrvd_setattr(struct nfsrv_descript *nd, __unused int isdgram,
 	if (!nd->nd_repstat) {
 		if (NFSVNO_NOTSETSIZE(&nva)) {
 			if (NFSVNO_EXRDONLY(exp) ||
-			    (vfs_flags(vp->v_mount) & MNT_RDONLY))
+			    (vp->v_mount->mnt_flag & MNT_RDONLY))
 				nd->nd_repstat = EROFS;
 		} else {
-			if (vnode_vtype(vp) != VREG)
+			if (vp->v_type != VREG)
 				nd->nd_repstat = EINVAL;
 			else if (nva2.na_uid != nd->nd_cred->cr_uid ||
 			    NFSVNO_EXSTRICTACCESS(exp))
@@ -698,7 +698,7 @@ nfsrvd_readlink(struct nfsrv_descript *nd, __unused int isdgram,
 		nfsrv_postopattr(nd, getret, &nva);
 		goto out;
 	}
-	if (vnode_vtype(vp) != VLNK) {
+	if (vp->v_type != VLNK) {
 		if (nd->nd_flag & ND_NFSV2)
 			nd->nd_repstat = ENXIO;
 		else
@@ -833,11 +833,11 @@ nfsrvd_read(struct nfsrv_descript *nd, __unused int isdgram,
 		if (lop->lo_end < off)
 			lop->lo_end = NFS64BITSSET;
 	}
-	if (vnode_vtype(vp) != VREG) {
+	if (vp->v_type != VREG) {
 		if (nd->nd_flag & ND_NFSV3)
 			nd->nd_repstat = EINVAL;
 		else
-			nd->nd_repstat = (vnode_vtype(vp) == VDIR) ? EISDIR :
+			nd->nd_repstat = (vp->v_type == VDIR) ? EISDIR :
 			    EINVAL;
 	}
 	getret = nfsvno_getattr(vp, &nva, nd, p, 1, NULL);
@@ -1042,11 +1042,11 @@ nfsrvd_write(struct nfsrv_descript *nd, __unused int isdgram,
 
 	if (retlen > nfs_srvmaxio || retlen < 0)
 		nd->nd_repstat = EIO;
-	if (vnode_vtype(vp) != VREG && !nd->nd_repstat) {
+	if (vp->v_type != VREG && !nd->nd_repstat) {
 		if (nd->nd_flag & ND_NFSV3)
 			nd->nd_repstat = EINVAL;
 		else
-			nd->nd_repstat = (vnode_vtype(vp) == VDIR) ? EISDIR :
+			nd->nd_repstat = (vp->v_type == VDIR) ? EISDIR :
 			    EINVAL;
 	}
 	NFSZERO_ATTRBIT(&attrbits);
@@ -1360,7 +1360,7 @@ nfsrvd_mknod(struct nfsrv_descript *nd, __unused int isdgram,
 		case NFFIFO:
 			break;
 		case NFDIR:
-			cnflags = (LOCKPARENT | SAVENAME);
+			cnflags = LOCKPARENT;
 			break;
 		default:
 			nd->nd_repstat = NFSERR_BADTYPE;
@@ -1567,7 +1567,7 @@ nfsrvd_remove(struct nfsrv_descript *nd, __unused int isdgram,
 	}
 	if (!nd->nd_repstat) {
 		if (nd->nd_flag & ND_NFSV4) {
-			if (vnode_vtype(named.ni_vp) == VDIR)
+			if (named.ni_vp->v_type == VDIR)
 				nd->nd_repstat = nfsvno_rmdirsub(&named, 1,
 				    nd->nd_cred, p, exp);
 			else
@@ -1740,7 +1740,7 @@ nfsrvd_rename(struct nfsrv_descript *nd, int isdgram,
 		nfsvno_relpathbuf(&tond);
 		goto out;
 	}
-	if (vnode_vtype(fromnd.ni_vp) == VDIR)
+	if (fromnd.ni_vp->v_type == VDIR)
 		tond.ni_cnd.cn_flags |= WILLBEDIR;
 	nd->nd_repstat = nfsvno_namei(nd, &tond, tdp, 0, &tnes, &tdirp);
 	nd->nd_repstat = nfsvno_rename(&fromnd, &tond, nd->nd_repstat,
@@ -1798,7 +1798,7 @@ nfsrvd_link(struct nfsrv_descript *nd, int isdgram,
 		goto out;
 	}
 	NFSVOPUNLOCK(vp);
-	if (vnode_vtype(vp) == VDIR) {
+	if (vp->v_type == VDIR) {
 		if (nd->nd_flag & ND_NFSV4)
 			nd->nd_repstat = NFSERR_ISDIR;
 		else
@@ -1823,8 +1823,7 @@ nfsrvd_link(struct nfsrv_descript *nd, int isdgram,
 				NFSVOPUNLOCK(dp);
 		}
 	}
-	NFSNAMEICNDSET(&named.ni_cnd, nd->nd_cred, CREATE,
-	    LOCKPARENT | SAVENAME | NOCACHE);
+	NFSNAMEICNDSET(&named.ni_cnd, nd->nd_cred, CREATE, LOCKPARENT | NOCACHE);
 	if (!nd->nd_repstat) {
 		nfsvno_setpathbuf(&named, &bufp, &hashp);
 		error = nfsrv_parsename(nd, bufp, hashp, &named.ni_pathlen);
@@ -2018,8 +2017,7 @@ nfsrvd_mkdir(struct nfsrv_descript *nd, __unused int isdgram,
 		nfsrv_wcc(nd, dirfor_ret, &dirfor, diraft_ret, &diraft);
 		goto out;
 	}
-	NFSNAMEICNDSET(&named.ni_cnd, nd->nd_cred, CREATE,
-	    LOCKPARENT | SAVENAME | NOCACHE);
+	NFSNAMEICNDSET(&named.ni_cnd, nd->nd_cred, CREATE, LOCKPARENT | NOCACHE);
 	nfsvno_setpathbuf(&named, &bufp, &hashp);
 	error = nfsrv_parsename(nd, bufp, hashp, &named.ni_pathlen);
 	if (error)
@@ -2499,8 +2497,8 @@ nfsrvd_lock(struct nfsrv_descript *nd, __unused int isdgram,
 	/*
 	 * Do basic access checking.
 	 */
-	if (!nd->nd_repstat && vnode_vtype(vp) != VREG) {
-	    if (vnode_vtype(vp) == VDIR)
+	if (!nd->nd_repstat && vp->v_type != VREG) {
+	    if (vp->v_type == VDIR)
 		nd->nd_repstat = NFSERR_ISDIR;
 	    else
 		nd->nd_repstat = NFSERR_INVAL;
@@ -2643,8 +2641,8 @@ nfsrvd_lockt(struct nfsrv_descript *nd, __unused int isdgram,
 	error = nfsrv_mtostr(nd, stp->ls_owner, stp->ls_ownerlen);
 	if (error)
 		goto nfsmout;
-	if (!nd->nd_repstat && vnode_vtype(vp) != VREG) {
-	    if (vnode_vtype(vp) == VDIR)
+	if (!nd->nd_repstat && vp->v_type != VREG) {
+	    if (vp->v_type == VDIR)
 		nd->nd_repstat = NFSERR_ISDIR;
 	    else
 		nd->nd_repstat = NFSERR_INVAL;
@@ -2775,8 +2773,8 @@ nfsrvd_locku(struct nfsrv_descript *nd, __unused int isdgram,
 		nd->nd_flag |= ND_IMPLIEDCLID;
 		nd->nd_clientid.qval = clientid.qval;
 	}
-	if (!nd->nd_repstat && vnode_vtype(vp) != VREG) {
-	    if (vnode_vtype(vp) == VDIR)
+	if (!nd->nd_repstat && vp->v_type != VREG) {
+	    if (vp->v_type == VDIR)
 		nd->nd_repstat = NFSERR_ISDIR;
 	    else
 		nd->nd_repstat = NFSERR_INVAL;
@@ -3112,7 +3110,7 @@ nfsrvd_open(struct nfsrv_descript *nd, __unused int isdgram,
 	/*
 	 * Do basic access checking.
 	 */
-	if (!nd->nd_repstat && vnode_vtype(vp) != VREG) {
+	if (!nd->nd_repstat && vp->v_type != VREG) {
 		/*
 		 * The IETF working group decided that this is the correct
 		 * error return for all non-regular files.
@@ -3133,12 +3131,14 @@ nfsrvd_open(struct nfsrv_descript *nd, __unused int isdgram,
 	 * operation's results to be consistent with NFSv3, but that is
 	 * not what the current Linux client appears to be doing.
 	 * Since both the Linux and OpenSolaris NFSv4 servers do this check,
-	 * I have enabled it by default.
+	 * I have enabled it by default.  Since Linux does not apply this
+	 * check for claim_delegate_cur, this code does the same.
 	 * If this semantic change causes a problem, it can be disabled by
 	 * setting the sysctl vfs.nfsd.v4openaccess to 0 to re-enable the
 	 * previous semantics.
 	 */
-	if (nfsrv_openaccess && create == NFSV4OPEN_NOCREATE)
+	if (nfsrv_openaccess && create == NFSV4OPEN_NOCREATE &&
+	    (stp->ls_flags & NFSLCK_DELEGCUR) == 0)
 		override = NFSACCCHK_NOOVERRIDE;
 	else
 		override = NFSACCCHK_ALLOWOWNER;
@@ -3820,6 +3820,11 @@ nfsrvd_secinfononame(struct nfsrv_descript *nd, int isdgram,
 	fhstyle = fxdr_unsigned(int, *tl);
 	switch (fhstyle) {
 	case NFSSECINFONONAME_PARENT:
+		if (dp->v_type != VDIR) {
+			vput(dp);
+			nd->nd_repstat = NFSERR_NOTDIR;
+			goto nfsmout;
+		}
 		NFSNAMEICNDSET(&named.ni_cnd, nd->nd_cred, LOOKUP,
 		    LOCKLEAF | SAVESTART);
 		nfsvno_setpathbuf(&named, &bufp, &hashp);
@@ -4566,9 +4571,10 @@ nfsrvd_sequence(struct nfsrv_descript *nd, __unused int isdgram,
 		cache_this = 1;
 	else
 		cache_this = 0;
-	nd->nd_flag |= ND_HASSEQUENCE;
 	nd->nd_repstat = nfsrv_checksequence(nd, sequenceid, &highest_slotid,
 	    &target_highest_slotid, cache_this, &sflags, p);
+	if (nd->nd_repstat != NFSERR_BADSLOT)
+		nd->nd_flag |= ND_HASSEQUENCE;
 	if (nd->nd_repstat == 0) {
 		NFSM_BUILD(tl, uint32_t *, NFSX_V4SESSIONID);
 		NFSBCOPY(nd->nd_sessionid, tl, NFSX_V4SESSIONID);
@@ -4959,6 +4965,12 @@ nfsrvd_layoutreturn(struct nfsrv_descript *nd, __unused int isdgram,
 		}
 
 		maxcnt = fxdr_unsigned(int, *tl);
+		/*
+		 * There is no fixed upper bound defined in the RFCs,
+		 * but 128Kbytes should be more than sufficient.
+		 */
+		if (maxcnt < 0 || maxcnt > 131072)
+			maxcnt = 0;
 		if (maxcnt > 0) {
 			layp = malloc(maxcnt + 1, M_TEMP, M_WAITOK);
 			error = nfsrv_mtostr(nd, (char *)layp, maxcnt);
@@ -5046,11 +5058,16 @@ nfsrvd_layouterror(struct nfsrv_descript *nd, __unused int isdgram,
 		opnum = fxdr_unsigned(int, *tl);
 		NFSD_DEBUG(4, "nfsrvd_layouterr op=%d stat=%d\n", opnum, stat);
 		/*
-		 * Except for NFSERR_ACCES and NFSERR_STALE errors,
-		 * disable the mirror.
+		 * Except for NFSERR_ACCES, NFSERR_STALE and NFSERR_NOSPC
+		 * errors, disable the mirror.
 		 */
-		if (stat != NFSERR_ACCES && stat != NFSERR_STALE)
+		if (stat != NFSERR_ACCES && stat != NFSERR_STALE &&
+		    stat != NFSERR_NOSPC)
 			nfsrv_delds(devid, curthread);
+
+		/* For NFSERR_NOSPC, mark all deviceids and layouts. */
+		if (stat == NFSERR_NOSPC)
+			nfsrv_marknospc(devid, true);
 	}
 nfsmout:
 	vput(vp);
@@ -5070,8 +5087,8 @@ nfsrvd_layoutstats(struct nfsrv_descript *nd, __unused int isdgram,
 	int cnt, error = 0;
 	int layouttype __unused;
 	char devid[NFSX_V4DEVICEID] __unused;
-	uint64_t offset, len, readcount, readbytes, writecount, writebytes
-	    __unused;
+	uint64_t offset __unused, len __unused, readcount __unused;
+	uint64_t readbytes __unused, writecount __unused, writebytes __unused;
 
 	NFSM_DISSECT(tl, uint32_t *, 6 * NFSX_HYPER + NFSX_STATEID +
 	    NFSX_V4DEVICEID + 2 * NFSX_UNSIGNED);
@@ -5392,7 +5409,7 @@ nfsrvd_allocate(struct nfsrv_descript *nd, __unused int isdgram,
 	    OFF_MAX || lop->lo_end < lop->lo_first))
 		nd->nd_repstat = NFSERR_INVAL;
 
-	if (nd->nd_repstat == 0 && vnode_vtype(vp) != VREG)
+	if (nd->nd_repstat == 0 && vp->v_type != VREG)
 		nd->nd_repstat = NFSERR_WRONGTYPE;
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_OWNER);
@@ -5500,7 +5517,7 @@ nfsrvd_deallocate(struct nfsrv_descript *nd, __unused int isdgram,
 			nd->nd_repstat = NFSERR_INVAL;
 	}
 
-	if (nd->nd_repstat == 0 && vnode_vtype(vp) != VREG)
+	if (nd->nd_repstat == 0 && vp->v_type != VREG)
 		nd->nd_repstat = NFSERR_WRONGTYPE;
 	NFSZERO_ATTRBIT(&attrbits);
 	NFSSETBIT_ATTRBIT(&attrbits, NFSATTRBIT_OWNER);
@@ -5614,7 +5631,7 @@ nfsrvd_copy_file_range(struct nfsrv_descript *nd, __unused int isdgram,
 	    outlop->lo_first))
 		nd->nd_repstat = NFSERR_INVAL;
 
-	if (nd->nd_repstat == 0 && vnode_vtype(vp) != VREG)
+	if (nd->nd_repstat == 0 && vp->v_type != VREG)
 		nd->nd_repstat = NFSERR_WRONGTYPE;
 
 	/* Check permissions for the input file. */
@@ -5638,7 +5655,7 @@ nfsrvd_copy_file_range(struct nfsrv_descript *nd, __unused int isdgram,
 	error = NFSVOPLOCK(tovp, LK_SHARED);
 	if (error != 0)
 		goto out;
-	if (vnode_vtype(tovp) != VREG)
+	if (tovp->v_type != VREG)
 		nd->nd_repstat = NFSERR_WRONGTYPE;
 
 	/* For the output file, we only need the Owner attribute. */
@@ -5780,9 +5797,9 @@ nfsrvd_seek(struct nfsrv_descript *nd, __unused int isdgram,
 		cmd = FIOSEEKHOLE;
 	else
 		nd->nd_repstat = NFSERR_BADXDR;
-	if (nd->nd_repstat == 0 && vnode_vtype(vp) == VDIR)
+	if (nd->nd_repstat == 0 && vp->v_type == VDIR)
 		nd->nd_repstat = NFSERR_ISDIR;
-	if (nd->nd_repstat == 0 && vnode_vtype(vp) != VREG)
+	if (nd->nd_repstat == 0 && vp->v_type != VREG)
 		nd->nd_repstat = NFSERR_WRONGTYPE;
 	if (nd->nd_repstat == 0 && off < 0)
 		nd->nd_repstat = NFSERR_NXIO;
@@ -6084,10 +6101,12 @@ nfsrvd_listxattr(struct nfsrv_descript *nd, __unused int isdgram,
 		if (cookie2 < cookie)
 			nd->nd_repstat = NFSERR_BADXDR;
 	}
+	retlen = NFSX_HYPER + 2 * NFSX_UNSIGNED;
+	if (nd->nd_repstat == 0 && len2 < retlen)
+		nd->nd_repstat = NFSERR_TOOSMALL;
 	if (nd->nd_repstat == 0) {
 		/* Now copy the entries out. */
-		retlen = NFSX_HYPER + 2 * NFSX_UNSIGNED;
-		if (len == 0 && retlen <= len2) {
+		if (len == 0) {
 			/* The cookie was at eof. */
 			NFSM_BUILD(tl, uint32_t *, NFSX_HYPER + 2 *
 			    NFSX_UNSIGNED);

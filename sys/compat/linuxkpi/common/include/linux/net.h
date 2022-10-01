@@ -28,8 +28,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_NET_H_
-#define	_LINUX_NET_H_
+#ifndef	_LINUXKPI_LINUX_NET_H_
+#define	_LINUXKPI_LINUX_NET_H_
 
 #include <sys/types.h>
 #include <sys/malloc.h>
@@ -58,9 +58,9 @@ sock_getname(struct socket *so, struct sockaddr *addr, int *sockaddr_len,
 		if ((so->so_state & (SS_ISCONNECTED|SS_ISCONFIRMING)) == 0)
 			return (-ENOTCONN);
 
-		error = (*so->so_proto->pr_usrreqs->pru_peeraddr)(so, &nam);
+		error = so->so_proto->pr_peeraddr(so, &nam);
 	} else
-		error = (*so->so_proto->pr_usrreqs->pru_sockaddr)(so, &nam);
+		error = so->so_proto->pr_sockaddr(so, &nam);
 	if (error)
 		return (-error);
 	*addr = *nam;
@@ -86,4 +86,4 @@ net_ratelimit(void)
 	return (linuxkpi_net_ratelimit());
 }
 
-#endif	/* _LINUX_NET_H_ */
+#endif	/* _LINUXKPI_LINUX_NET_H_ */

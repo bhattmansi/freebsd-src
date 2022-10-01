@@ -111,12 +111,13 @@ struct fs_ops {
     off_t	(*fo_seek)(struct open_file *f, off_t offset, int where);
     int		(*fo_stat)(struct open_file *f, struct stat *sb);
     int		(*fo_readdir)(struct open_file *f, struct dirent *d);
+    int		(*fo_preload)(struct open_file *f);
     int		(*fo_mount)(const char *, const char *, void **);
     int		(*fo_unmount)(const char *, void *);
 };
 
 /*
- * libstand-supplied filesystems
+ * libsa-supplied filesystems
  */
 extern struct fs_ops ufs_fsops;
 extern struct fs_ops tftp_fsops;
@@ -138,9 +139,12 @@ extern struct fs_ops efihttp_fsops;
 /* 
  * Device switch
  */
+#define DEV_NAMLEN	8		/* Length of name of device class */
+#define DEV_DEVLEN	128		/* Length of longest device instance name */
+struct devdesc;
 struct devsw {
-    const char	dv_name[8];
-    int		dv_type;		/* opaque type constant, arch-dependant */
+    const char	dv_name[DEV_NAMLEN];
+    int		dv_type;		/* opaque type constant */
 #define DEVT_NONE	0
 #define DEVT_DISK	1
 #define DEVT_NET	2
@@ -155,10 +159,11 @@ struct devsw {
     int		(*dv_ioctl)(struct open_file *f, u_long cmd, void *data);
     int		(*dv_print)(int verbose);	/* print device information */
     void	(*dv_cleanup)(void);
+    char *	(*dv_fmtdev)(struct devdesc *);
 };
 
 /*
- * libstand-supplied device switch
+ * libsa-supplied device switch
  */
 extern struct devsw netdev;
 
@@ -174,6 +179,8 @@ struct devdesc {
     int			d_unit;
     void		*d_opendata;
 };
+
+char *devformat(struct devdesc *d);
 
 struct open_file {
     int			f_flags;	/* see F_* below */
@@ -300,6 +307,7 @@ extern void	closeall(void);
 extern ssize_t	read(int, void *, size_t);
 extern ssize_t	write(int, const void *, size_t);
 extern struct	dirent *readdirfd(int);
+extern void	preload(int);
 
 extern void	srandom(unsigned int);
 extern long	random(void);
@@ -484,6 +492,7 @@ void	hexdump(caddr_t region, size_t len);
 /* tslog.c */
 #define TSRAW(a, b, c) tslog(a, b, c)
 #define TSENTER() TSRAW("ENTER", __func__, NULL)
+#define TSENTER2(x) TSRAW("ENTER", __func__, x)
 #define TSEXIT() TSRAW("EXIT", __func__, NULL)
 #define TSLINE() TSRAW("EVENT", __FILE__, __XSTRING(__LINE__))
 void tslog(const char *, const char *, const char *);

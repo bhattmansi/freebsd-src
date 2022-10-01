@@ -10,8 +10,11 @@ SUBDIR=	alias \
 	backlight \
 	banner \
 	basename \
+	beep \
+	bintrans \
 	brandelf \
 	bsdcat \
+	bsddialog \
 	bsdiff \
 	bzip2 \
 	bzip2recover \
@@ -88,7 +91,6 @@ SUBDIR=	alias \
 	m4 \
 	mandoc \
 	mesg \
-	minigzip \
 	ministat \
 	mkdep \
 	mkfifo \
@@ -167,8 +169,6 @@ SUBDIR=	alias \
 	unzip \
 	units \
 	unvis \
-	uudecode \
-	uuencode \
 	vis \
 	vmstat \
 	w \

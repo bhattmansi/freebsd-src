@@ -210,7 +210,7 @@ static struct syscall_helper_data msg32_syscalls[] = {
 #endif
 
 static int
-msginit()
+msginit(void)
 {
 	struct prison *pr;
 	void **rsv;
@@ -313,7 +313,7 @@ msginit()
 }
 
 static int
-msgunload()
+msgunload(void)
 {
 	struct msqid_kernel *msqkptr;
 	int msqid;
@@ -1704,7 +1704,7 @@ freebsd7_freebsd32_msgctl(struct thread *td,
     struct freebsd7_freebsd32_msgctl_args *uap)
 {
 	struct msqid_ds msqbuf;
-	struct msqid_ds32_old msqbuf32;
+	struct msqid_ds_old32 msqbuf32;
 	int error;
 
 	if (uap->cmd == IPC_SET) {

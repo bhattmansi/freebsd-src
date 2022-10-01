@@ -36,6 +36,7 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libauditd \
 	libbegemot \
 	libblocksruntime \
+	libbsddialog \
 	libbsdstat \
 	libbsm \
 	libbz2 \
@@ -56,12 +57,12 @@ SUBDIR=	${SUBDIR_BOOTSTRAP} \
 	libexecinfo \
 	libexpat \
 	libfetch \
-	libfigpar \
 	libgcc_eh \
 	libgcc_s \
 	libgeom \
 	libifconfig \
 	libipsec \
+	libiscsiutil \
 	libjail \
 	libkiconv \
 	libkvm \
@@ -116,6 +117,7 @@ SUBDIR_DEPEND_geom=	libufs
 SUBDIR_DEPEND_googletest= libregex
 SUBDIR_DEPEND_libarchive= libz libbz2 libexpat liblzma libmd libzstd
 SUBDIR_DEPEND_libauditdm= libbsm
+SUBDIR_DEPEND_libbsddialog= ncurses
 SUBDIR_DEPEND_libbsnmp= ${_libnetgraph}
 SUBDIR_DEPEND_libc++:= libcxxrt
 # libssp_nonshared doesn't need to be linked into libc on every arch, but it is
@@ -167,7 +169,7 @@ SUBDIR+=	clang
 SUBDIR.${MK_CUSE}+= 	libcuse
 SUBDIR.${MK_CXX}+=	libdevdctl
 SUBDIR.${MK_TOOLCHAIN}+=libpe
-SUBDIR.${MK_DIALOG}+=	libdpv
+SUBDIR.${MK_DIALOG}+=	libdpv libfigpar
 SUBDIR.${MK_FILE}+=	libmagic
 SUBDIR.${MK_GPIO}+=	libgpio
 SUBDIR.${MK_GSSAPI}+=	libgssapi librpcsec_gss
@@ -176,16 +178,12 @@ SUBDIR.${MK_KERBEROS_SUPPORT}+=	libcom_err
 SUBDIR.${MK_LDNS}+=	libldns
 SUBDIR.${MK_STATS}+=	libstats
 
-# The libraries under libclang_rt can only be built by clang, and only make
-# sense to build when clang is enabled at all.  Furthermore, they can only be
-# built for certain architectures.
-.if ${COMPILER_TYPE} == "clang" && \
-    (${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "amd64" || \
-    ${MACHINE_CPUARCH} == "arm" || ${MACHINE_CPUARCH} == "i386" || \
-    ${MACHINE_CPUARCH} == "powerpc")
+# The libraries under libclang_rt can only be built by clang and when we enable
+# C++ support.
+.if ${COMPILER_TYPE} == "clang" && ${MK_CXX} != "no"
 _libclang_rt=	libclang_rt
-.elif ${MK_ASAN} != "no" || ${MK_UBSAN} != "no"
-.error "Requested build with sanitizers but cannot build runtime libraries!"
+.elif (${MK_ASAN} != "no" || ${MK_UBSAN} != "no") && make(all)
+.error Requested build with sanitizers but cannot build runtime libraries!
 .endif
 
 .if ${MK_CXX} != "no"
@@ -215,8 +213,8 @@ SUBDIR.${MK_BHYVE}+=	libvmmapi
 .if ${MACHINE_ARCH} != "powerpc"
 SUBDIR.${MK_OPENMP}+=	libomp
 .endif
-.if !defined(COMPAT_32BIT)
-SUBDIR.${MK_OPENSSH}+=	libcbor
+.if !defined(COMPAT_32BIT) && ${MK_USB} != "no"
+SUBDIR.${MK_OPENSSH}+=	libcbor libfido2
 .endif
 SUBDIR.${MK_OPENSSL}+=	libmp
 SUBDIR.${MK_PF}+=	libpfctl

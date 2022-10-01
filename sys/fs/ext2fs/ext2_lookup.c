@@ -79,15 +79,8 @@ SDT_PROBE_DEFINE4(ext2fs, , trace, ext2_dirbad_error,
 SDT_PROBE_DEFINE5(ext2fs, , trace, ext2_dirbadentry_error,
     "char*", "int", "uint32_t", "uint16_t", "uint8_t");
 
-#ifdef INVARIANTS
-static int dirchk = 1;
-#else
-static int dirchk = 0;
-#endif
-
 static SYSCTL_NODE(_vfs, OID_AUTO, e2fs, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     "EXT2FS filesystem");
-SYSCTL_INT(_vfs_e2fs, OID_AUTO, dircheck, CTLFLAG_RW, &dirchk, 0, "");
 
 /*
    DIRBLKSIZE in ffs is DEV_BSIZE (in most cases 512)
@@ -129,8 +122,8 @@ static u_char dt_to_ext2_ft[] = {
 #define	DTTOFT(dt) \
     ((dt) < nitems(dt_to_ext2_ft) ? dt_to_ext2_ft[(dt)] : EXT2_FT_UNKNOWN)
 
-static int	ext2_dirbadentry(struct vnode *dp, struct ext2fs_direct_2 *de,
-		    int entryoffsetinblock);
+static int	ext2_check_direntry(struct vnode *dp,
+		    struct ext2fs_direct_2 *de, int entryoffsetinblock);
 static int	ext2_is_dot_entry(struct componentname *cnp);
 static int	ext2_lookup_ino(struct vnode *vdp, struct vnode **vpp,
 		    struct componentname *cnp, ino_t *dd_ino);
@@ -155,7 +148,7 @@ ext2_readdir(struct vop_readdir_args *ap)
 	struct buf *bp;
 	struct inode *ip;
 	struct ext2fs_direct_2 *dp, *edp;
-	u_long *cookies;
+	uint64_t *cookies;
 	struct dirent dstdp;
 	off_t offset, startoffset;
 	size_t readcnt, skipcnt;
@@ -521,13 +514,10 @@ notfound:
 		 * We return ni_vp == NULL to indicate that the entry
 		 * does not currently exist; we leave a pointer to
 		 * the (locked) directory inode in ndp->ni_dvp.
-		 * The pathname buffer is saved so that the name
-		 * can be obtained later.
 		 *
 		 * NB - if the directory is unlocked, then this
 		 * information cannot be used.
 		 */
-		cnp->cn_flags |= SAVENAME;
 		return (EJUSTRETURN);
 	}
 	/*
@@ -638,7 +628,6 @@ found:
 		    &tdp)) != 0)
 			return (error);
 		*vpp = tdp;
-		cnp->cn_flags |= SAVENAME;
 		return (0);
 	}
 	if (dd_ino != NULL)
@@ -734,20 +723,14 @@ ext2_search_dirblock(struct inode *ip, void *data, int *foundp,
 	ep = (struct ext2fs_direct_2 *)((char *)data + offset);
 	top = (struct ext2fs_direct_2 *)((char *)data + bsize);
 	while (ep < top) {
-		/*
-		 * Full validation checks are slow, so we only check
-		 * enough to insure forward progress through the
-		 * directory. Complete checks can be run by setting
-		 * "vfs.e2fs.dirchk" to be true.
-		 */
-		if (le16toh(ep->e2d_reclen) == 0 ||
-		    (dirchk && ext2_dirbadentry(vdp, ep, offset))) {
+		if (ext2_check_direntry(vdp, ep, offset)) {
 			int i;
 
 			ext2_dirbad(ip, *offp, "mangled entry");
 			i = bsize - (offset & (bsize - 1));
 			*offp += i;
 			offset += i;
+			ep = (struct ext2fs_direct_2 *)((char *)data + offset);
 			continue;
 		}
 
@@ -836,15 +819,11 @@ ext2_dirbad(struct inode *ip, doff_t offset, char *how)
  *	name is not longer than MAXNAMLEN
  *	name must be as long as advertised, and null terminated
  */
-/*
- *	changed so that it confirms to ext2_check_dir_entry
- */
 static int
-ext2_dirbadentry(struct vnode *dp, struct ext2fs_direct_2 *de,
+ext2_check_direntry(struct vnode *dp, struct ext2fs_direct_2 *de,
     int entryoffsetinblock)
 {
-	int DIRBLKSIZ = VTOI(dp)->i_e2fs->e2fs_bsize;
-
+	struct m_ext2fs *fs = VTOI(dp)->i_e2fs;
 	char *error_msg = NULL;
 
 	if (le16toh(de->e2d_reclen) < EXT2_DIR_REC_LEN(1))
@@ -853,12 +832,10 @@ ext2_dirbadentry(struct vnode *dp, struct ext2fs_direct_2 *de,
 		error_msg = "rec_len % 4 != 0";
 	else if (le16toh(de->e2d_reclen) < EXT2_DIR_REC_LEN(de->e2d_namlen))
 		error_msg = "reclen is too small for name_len";
-	else if (entryoffsetinblock + le16toh(de->e2d_reclen)> DIRBLKSIZ)
+	else if (entryoffsetinblock + le16toh(de->e2d_reclen)> fs->e2fs_bsize)
 		error_msg = "directory entry across blocks";
-	/* else LATER
-	     if (de->inode > dir->i_sb->u.ext2_sb.s_es->s_inodes_count)
-		error_msg = "inode out of bounds";
-	*/
+	else if (le32toh(de->e2d_ino) > fs->e2fs->e2fs_icount)
+		error_msg = "directory entry inode out of bounds";
 
 	if (error_msg != NULL) {
 		SDT_PROBE5(ext2fs, , trace, ext2_dirbadentry_error,
@@ -866,7 +843,7 @@ ext2_dirbadentry(struct vnode *dp, struct ext2fs_direct_2 *de,
 		    le32toh(de->e2d_ino), le16toh(de->e2d_reclen),
 		    de->e2d_namlen);
 	}
-	return (error_msg == NULL ? 0 : 1);
+	return (error_msg == NULL ? 0 : EINVAL);
 }
 
 /*
@@ -944,10 +921,6 @@ ext2_direnter(struct inode *ip, struct vnode *dvp, struct componentname *cnp)
 	int DIRBLKSIZ = ip->i_e2fs->e2fs_bsize;
 	int error;
 
-#ifdef INVARIANTS
-	if ((cnp->cn_flags & SAVENAME) == 0)
-		panic("ext2_direnter: missing name");
-#endif
 	dp = VTOI(dvp);
 	newdir.e2d_ino = htole32(ip->i_number);
 	if (EXT2_HAS_INCOMPAT_FEATURE(ip->i_e2fs,

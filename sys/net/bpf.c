@@ -763,6 +763,10 @@ bpf_attachd(struct bpf_d *d, struct bpf_if *bp)
 		CK_LIST_INSERT_HEAD(&bp->bif_dlist, d, bd_next);
 
 	reset_d(d);
+
+	/* Trigger EVFILT_WRITE events. */
+	bpf_wakeup(d);
+
 	BPFD_UNLOCK(d);
 	bpf_bpfd_cnt++;
 
@@ -1511,18 +1515,18 @@ bpfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	 * Put interface into promiscuous mode.
 	 */
 	case BIOCPROMISC:
+		BPF_LOCK();
 		if (d->bd_bif == NULL) {
 			/*
 			 * No interface attached yet.
 			 */
 			error = EINVAL;
-			break;
-		}
-		if (d->bd_promisc == 0) {
+		} else if (d->bd_promisc == 0) {
 			error = ifpromisc(d->bd_bif->bif_ifp, 1);
 			if (error == 0)
 				d->bd_promisc = 1;
 		}
+		BPF_UNLOCK();
 		break;
 
 	/*
@@ -2229,11 +2233,16 @@ static int
 filt_bpfwrite(struct knote *kn, long hint)
 {
 	struct bpf_d *d = (struct bpf_d *)kn->kn_hook;
+
 	BPFD_LOCK_ASSERT(d);
 
-	kn->kn_data = d->bd_bif->bif_ifp->if_mtu;
-
-	return (1);
+	if (d->bd_bif == NULL) {
+		kn->kn_data = 0;
+		return (0);
+	} else {
+		kn->kn_data = d->bd_bif->bif_ifp->if_mtu;
+		return (1);
+	}
 }
 
 #define	BPF_TSTAMP_NONE		0
@@ -2527,6 +2536,7 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
     void (*cpfn)(struct bpf_d *, caddr_t, u_int, void *, u_int),
     struct bintime *bt)
 {
+	static char zeroes[BPF_ALIGNMENT];
 	struct bpf_xhdr hdr;
 #ifndef BURN_BRIDGES
 	struct bpf_hdr hdr_old;
@@ -2534,7 +2544,7 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
 	struct bpf_hdr32 hdr32_old;
 #endif
 #endif
-	int caplen, curlen, hdrlen, totlen;
+	int caplen, curlen, hdrlen, pad, totlen;
 	int do_wakeup = 0;
 	int do_timestamp;
 	int tstype;
@@ -2600,13 +2610,25 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
 		ROTATE_BUFFERS(d);
 		do_wakeup = 1;
 		curlen = 0;
-	} else if (d->bd_immediate || d->bd_state == BPF_TIMED_OUT)
-		/*
-		 * Immediate mode is set, or the read timeout has already
-		 * expired during a select call.  A packet arrived, so the
-		 * reader should be woken up.
-		 */
-		do_wakeup = 1;
+	} else {
+		if (d->bd_immediate || d->bd_state == BPF_TIMED_OUT) {
+			/*
+			 * Immediate mode is set, or the read timeout has
+			 * already expired during a select call.  A packet
+			 * arrived, so the reader should be woken up.
+			 */
+			do_wakeup = 1;
+		}
+		pad = curlen - d->bd_slen;
+		KASSERT(pad >= 0 && pad <= sizeof(zeroes),
+		    ("%s: invalid pad byte count %d", __func__, pad));
+		if (pad > 0) {
+			/* Zero pad bytes. */
+			bpf_append_bytes(d, d->bd_sbuf, d->bd_slen, zeroes,
+			    pad);
+		}
+	}
+
 	caplen = totlen - hdrlen;
 	tstype = d->bd_tstamp;
 	do_timestamp = tstype != BPF_T_NONE;

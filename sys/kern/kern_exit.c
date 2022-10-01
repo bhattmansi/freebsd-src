@@ -136,7 +136,7 @@ reaper_abandon_children(struct proc *p, bool exiting)
 {
 	struct proc *p1, *p2, *ptmp;
 
-	sx_assert(&proctree_lock, SX_LOCKED);
+	sx_assert(&proctree_lock, SX_XLOCKED);
 	KASSERT(p != initproc, ("reaper_abandon_children for initproc"));
 	if ((p->p_treeflag & P_TREE_REAPER) == 0)
 		return;
@@ -205,12 +205,19 @@ exit_onexit(struct proc *p)
 /*
  * exit -- death of process.
  */
-void
-sys_sys_exit(struct thread *td, struct sys_exit_args *uap)
+int
+sys_exit(struct thread *td, struct exit_args *uap)
 {
 
 	exit1(td, uap->rval, 0);
-	/* NOTREACHED */
+	__unreachable();
+}
+
+void
+proc_set_p2_wexit(struct proc *p)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+	p->p_flag2 |= P2_WEXIT;
 }
 
 /*
@@ -243,14 +250,18 @@ exit1(struct thread *td, int rval, int signo)
 	}
 
 	/*
-	 * Deref SU mp, since the thread does not return to userspace.
+	 * Process deferred operations, designated with ASTF_KCLEAR.
+	 * For instance, we need to deref SU mp, since the thread does
+	 * not return to userspace, and wait for geom to stabilize.
 	 */
-	td_softdep_cleanup(td);
+	ast_kclear(td);
 
 	/*
 	 * MUST abort all other threads before proceeding past here.
 	 */
 	PROC_LOCK(p);
+	proc_set_p2_wexit(p);
+
 	/*
 	 * First check if some other thread or external request got
 	 * here before us.  If so, act appropriately: exit or suspend.
@@ -263,16 +274,15 @@ exit1(struct thread *td, int rval, int signo)
 		 * Kill off the other threads. This requires
 		 * some co-operation from other parts of the kernel
 		 * so it may not be instantaneous.  With this state set
-		 * any thread entering the kernel from userspace will
-		 * thread_exit() in trap().  Any thread attempting to
+		 * any thread attempting to interruptibly
 		 * sleep will return immediately with EINTR or EWOULDBLOCK
 		 * which will hopefully force them to back out to userland
 		 * freeing resources as they go.  Any thread attempting
-		 * to return to userland will thread_exit() from userret().
+		 * to return to userland will thread_exit() from ast().
 		 * thread_exit() will unsuspend us when the last of the
 		 * other threads exits.
 		 * If there is already a thread singler after resumption,
-		 * calling thread_single will fail; in that case, we just
+		 * calling thread_single() will fail; in that case, we just
 		 * re-check all suspension request, the thread should
 		 * either be suspended there or exit.
 		 */
@@ -369,14 +379,13 @@ exit1(struct thread *td, int rval, int signo)
 	 * executing, prevent it from rearming itself and let it finish.
 	 */
 	if (timevalisset(&p->p_realtimer.it_value) &&
-	    _callout_stop_safe(&p->p_itcallout, CS_EXECUTING, NULL) == 0) {
+	    callout_stop(&p->p_itcallout) == 0) {
 		timevalclear(&p->p_realtimer.it_interval);
-		msleep(&p->p_itcallout, &p->p_mtx, PWAIT, "ritwait", 0);
-		KASSERT(!timevalisset(&p->p_realtimer.it_value),
-		    ("realtime timer is still armed"));
+		PROC_UNLOCK(p);
+		callout_drain(&p->p_itcallout);
+	} else {
+		PROC_UNLOCK(p);
 	}
-
-	PROC_UNLOCK(p);
 
 	if (p->p_sysent->sv_onexit != NULL)
 		p->p_sysent->sv_onexit(p);
@@ -396,13 +405,6 @@ exit1(struct thread *td, int rval, int signo)
 	fdescfree(td);
 
 	/*
-	 * If this thread tickled GEOM, we need to wait for the giggling to
-	 * stop before we return to userland
-	 */
-	if (td->td_pflags & TDP_GEOM)
-		g_waitidle();
-
-	/*
 	 * Remove ourself from our leader's peer list and wake our leader.
 	 */
 	if (p->p_leader->p_peers != NULL) {
@@ -417,6 +419,7 @@ exit1(struct thread *td, int rval, int signo)
 		mtx_unlock(&ppeers_lock);
 	}
 
+	exec_free_abi_mappings(p);
 	vmspace_exit(td);
 	(void)acct_process(td);
 
@@ -424,11 +427,19 @@ exit1(struct thread *td, int rval, int signo)
 	ktrprocexit(td);
 #endif
 	/*
-	 * Release reference to text vnode
+	 * Release reference to text vnode etc
 	 */
 	if (p->p_textvp != NULL) {
 		vrele(p->p_textvp);
 		p->p_textvp = NULL;
+	}
+	if (p->p_textdvp != NULL) {
+		vrele(p->p_textdvp);
+		p->p_textdvp = NULL;
+	}
+	if (p->p_binname != NULL) {
+		free(p->p_binname, M_PARGS);
+		p->p_binname = NULL;
 	}
 
 	/*
@@ -462,6 +473,7 @@ exit1(struct thread *td, int rval, int signo)
 	 */
 	p->p_list.le_prev = NULL;
 #endif
+	prison_proc_unlink(p->p_ucred->cr_prison, p);
 	sx_xunlock(&allproc_lock);
 
 	sx_xlock(&proctree_lock);
@@ -485,7 +497,7 @@ exit1(struct thread *td, int rval, int signo)
 		wakeup(q->p_reaper);
 	for (; q != NULL; q = nq) {
 		nq = LIST_NEXT(q, p_sibling);
-		ksi = ksiginfo_alloc(TRUE);
+		ksi = ksiginfo_alloc(M_WAITOK);
 		PROC_LOCK(q);
 		q->p_sigparent = SIGCHLD;
 
@@ -727,9 +739,40 @@ struct abort2_args {
 int
 sys_abort2(struct thread *td, struct abort2_args *uap)
 {
+	void *uargs[16];
+	void **uargsp;
+	int error, nargs;
+
+	nargs = uap->nargs;
+	if (nargs < 0 || nargs > nitems(uargs))
+		nargs = -1;
+	uargsp = NULL;
+	if (nargs > 0) {
+		if (uap->args != NULL) {
+			error = copyin(uap->args, uargs,
+			    nargs * sizeof(void *));
+			if (error != 0)
+				nargs = -1;
+			else
+				uargsp = uargs;
+		} else
+			nargs = -1;
+	}
+	return (kern_abort2(td, uap->why, nargs, uargsp));
+}
+
+/*
+ * kern_abort2()
+ * Arguments:
+ *  why - user pointer to why
+ *  nargs - number of arguments copied or -1 if an error occurred in copying
+ *  args - pointer to an array of pointers in kernel format
+ */
+int
+kern_abort2(struct thread *td, const char *why, int nargs, void **uargs)
+{
 	struct proc *p = td->td_proc;
 	struct sbuf *sb;
-	void *uargs[16];
 	int error, i, sig;
 
 	/*
@@ -747,29 +790,24 @@ sys_abort2(struct thread *td, struct abort2_args *uap)
 	 */
 	sig = SIGKILL;
 	/* Prevent from DoSes from user-space. */
-	if (uap->nargs < 0 || uap->nargs > 16)
+	if (nargs == -1)
 		goto out;
-	if (uap->nargs > 0) {
-		if (uap->args == NULL)
-			goto out;
-		error = copyin(uap->args, uargs, uap->nargs * sizeof(void *));
-		if (error != 0)
-			goto out;
-	}
+	KASSERT(nargs >= 0 && nargs <= 16, ("called with too many args (%d)",
+	    nargs));
 	/*
 	 * Limit size of 'reason' string to 128. Will fit even when
 	 * maximal number of arguments was chosen to be logged.
 	 */
-	if (uap->why != NULL) {
-		error = sbuf_copyin(sb, uap->why, 128);
+	if (why != NULL) {
+		error = sbuf_copyin(sb, why, 128);
 		if (error < 0)
 			goto out;
 	} else {
 		sbuf_printf(sb, "(null)");
 	}
-	if (uap->nargs > 0) {
+	if (nargs > 0) {
 		sbuf_printf(sb, "(");
-		for (i = 0;i < uap->nargs; i++)
+		for (i = 0;i < nargs; i++)
 			sbuf_printf(sb, "%s%p", i == 0 ? "" : ", ", uargs[i]);
 		sbuf_printf(sb, ")");
 	}
@@ -1232,8 +1270,8 @@ report_alive_proc(struct thread *td, struct proc *p, siginfo_t *siginfo,
 	}
 	if (status != NULL)
 		*status = cont ? SIGCONT : W_STOPCODE(p->p_xsig);
-	PROC_UNLOCK(p);
 	td->td_retval[0] = p->p_pid;
+	PROC_UNLOCK(p);
 }
 
 int

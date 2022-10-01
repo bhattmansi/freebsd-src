@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -274,7 +274,7 @@ make_leaf_vdev(nvlist_t *props, const char *arg, boolean_t is_primary)
 	char path[MAXPATHLEN];
 	struct stat64 statbuf;
 	nvlist_t *vdev = NULL;
-	char *type = NULL;
+	const char *type = NULL;
 	boolean_t wholedisk = B_FALSE;
 	uint64_t ashift = 0;
 	int err;
@@ -514,9 +514,14 @@ get_replication(nvlist_t *nvroot, boolean_t fatal)
 		if (is_log)
 			continue;
 
-		/* Ignore holes introduced by removing aux devices */
+		/*
+		 * Ignore holes introduced by removing aux devices, along
+		 * with indirect vdevs introduced by previously removed
+		 * vdevs.
+		 */
 		verify(nvlist_lookup_string(nv, ZPOOL_CONFIG_TYPE, &type) == 0);
-		if (strcmp(type, VDEV_TYPE_HOLE) == 0)
+		if (strcmp(type, VDEV_TYPE_HOLE) == 0 ||
+		    strcmp(type, VDEV_TYPE_INDIRECT) == 0)
 			continue;
 
 		if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
@@ -1647,8 +1652,8 @@ construct_spec(nvlist_t *props, int argc, char **argv)
 					}
 				}
 				verify(nvlist_add_nvlist_array(nv,
-				    ZPOOL_CONFIG_CHILDREN, child,
-				    children) == 0);
+				    ZPOOL_CONFIG_CHILDREN,
+				    (const nvlist_t **)child, children) == 0);
 
 				for (c = 0; c < children; c++)
 					nvlist_free(child[c]);
@@ -1713,13 +1718,13 @@ construct_spec(nvlist_t *props, int argc, char **argv)
 	verify(nvlist_add_string(nvroot, ZPOOL_CONFIG_TYPE,
 	    VDEV_TYPE_ROOT) == 0);
 	verify(nvlist_add_nvlist_array(nvroot, ZPOOL_CONFIG_CHILDREN,
-	    top, toplevels) == 0);
+	    (const nvlist_t **)top, toplevels) == 0);
 	if (nspares != 0)
 		verify(nvlist_add_nvlist_array(nvroot, ZPOOL_CONFIG_SPARES,
-		    spares, nspares) == 0);
+		    (const nvlist_t **)spares, nspares) == 0);
 	if (nl2cache != 0)
 		verify(nvlist_add_nvlist_array(nvroot, ZPOOL_CONFIG_L2CACHE,
-		    l2cache, nl2cache) == 0);
+		    (const nvlist_t **)l2cache, nl2cache) == 0);
 
 spec_out:
 	for (t = 0; t < toplevels; t++)

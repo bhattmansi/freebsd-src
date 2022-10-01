@@ -336,10 +336,10 @@ nfsrv_setclient(struct nfsrv_descript *nd, struct nfsclient **new_clpp,
 		 * Add it after assigning a client id to it.
 		 */
 		new_clp->lc_flags |= LCL_NEEDSCONFIRM;
-		if ((nd->nd_flag & ND_NFSV41) != 0)
-			new_clp->lc_confirm.lval[0] = confirmp->lval[0] =
-			    ++confirm_index;
-		else
+		if ((nd->nd_flag & ND_NFSV41) != 0) {
+			confirmp->lval[0] = ++confirm_index;
+			new_clp->lc_confirm.lval[0] = confirmp->lval[0] - 1;
+		} else
 			confirmp->qval = new_clp->lc_confirm.qval =
 			    ++confirm_index;
 		clientidp->lval[0] = new_clp->lc_clientid.lval[0] =
@@ -348,6 +348,7 @@ nfsrv_setclient(struct nfsrv_descript *nd, struct nfsclient **new_clpp,
 		    nfsrv_nextclientindex();
 		new_clp->lc_stateindex = 0;
 		new_clp->lc_statemaxindex = 0;
+		new_clp->lc_prevsess = 0;
 		new_clp->lc_cbref = 0;
 		new_clp->lc_expiry = nfsrv_leaseexpiry();
 		LIST_INIT(&new_clp->lc_open);
@@ -449,10 +450,10 @@ nfsrv_setclient(struct nfsrv_descript *nd, struct nfsclient **new_clpp,
 		}
 
 		new_clp->lc_flags |= LCL_NEEDSCONFIRM;
-		if ((nd->nd_flag & ND_NFSV41) != 0)
-			new_clp->lc_confirm.lval[0] = confirmp->lval[0] =
-			    ++confirm_index;
-		else
+		if ((nd->nd_flag & ND_NFSV41) != 0) {
+			confirmp->lval[0] = ++confirm_index;
+			new_clp->lc_confirm.lval[0] = confirmp->lval[0] - 1;
+		} else
 			confirmp->qval = new_clp->lc_confirm.qval =
 			    ++confirm_index;
 		clientidp->lval[0] = new_clp->lc_clientid.lval[0] =
@@ -461,6 +462,7 @@ nfsrv_setclient(struct nfsrv_descript *nd, struct nfsclient **new_clpp,
 		    nfsrv_nextclientindex();
 		new_clp->lc_stateindex = 0;
 		new_clp->lc_statemaxindex = 0;
+		new_clp->lc_prevsess = 0;
 		new_clp->lc_cbref = 0;
 		new_clp->lc_expiry = nfsrv_leaseexpiry();
 
@@ -596,6 +598,7 @@ nfsrv_getclient(nfsquad_t clientid, int opflags, struct nfsclient **clpp,
 	struct nfssessionhash *shp;
 	struct nfsdsession *sep;
 	uint64_t sessid[2];
+	bool sess_replay;
 	static uint64_t next_sess = 0;
 
 	if (clpp)
@@ -676,12 +679,29 @@ nfsrv_getclient(nfsquad_t clientid, int opflags, struct nfsclient **clpp,
 	 * Perform any operations specified by the opflags.
 	 */
 	if (opflags & CLOPS_CONFIRM) {
-		if (((nd->nd_flag & ND_NFSV41) != 0 &&
-		     clp->lc_confirm.lval[0] != confirm.lval[0]) ||
-		    ((nd->nd_flag & ND_NFSV41) == 0 &&
-		     clp->lc_confirm.qval != confirm.qval))
+		sess_replay = false;
+		if ((nd->nd_flag & ND_NFSV41) != 0) {
+		    /*
+		     * For the case where lc_confirm.lval[0] == confirm.lval[0],
+		     * use the new session, but with the previous sessionid.
+		     * This is not exactly what the RFC describes, but should
+		     * result in the same reply as the previous CreateSession.
+		     */
+		    if (clp->lc_confirm.lval[0] + 1 == confirm.lval[0]) {
+			clp->lc_confirm.lval[0] = confirm.lval[0];
+			clp->lc_prevsess = sessid[0];
+		    } else if (clp->lc_confirm.lval[0] == confirm.lval[0]) {
+			if (clp->lc_prevsess == 0)
+			    error = NFSERR_SEQMISORDERED;
+			else
+			    sessid[0] = clp->lc_prevsess;
+			sess_replay = true;
+		    } else
+			error = NFSERR_SEQMISORDERED;
+		} else if ((nd->nd_flag & ND_NFSV41) == 0 &&
+		     clp->lc_confirm.qval != confirm.qval)
 			error = NFSERR_STALECLIENTID;
-		else if (nfsrv_notsamecredname(nd, clp))
+		if (error == 0 && nfsrv_notsamecredname(nd, clp))
 			error = NFSERR_CLIDINUSE;
 
 		if (!error) {
@@ -715,7 +735,7 @@ nfsrv_getclient(nfsquad_t clientid, int opflags, struct nfsclient **clpp,
 		    if (nsep != NULL) {
 			/* Hold a reference on the xprt for a backchannel. */
 			if ((nsep->sess_crflags & NFSV4CRSESS_CONNBACKCHAN)
-			    != 0) {
+			    != 0 && !sess_replay) {
 			    if (clp->lc_req.nr_client == NULL)
 				clp->lc_req.nr_client = (struct __rpc_client *)
 				    clnt_bck_create(nd->nd_xprt->xp_socket,
@@ -734,14 +754,16 @@ nfsrv_getclient(nfsquad_t clientid, int opflags, struct nfsclient **clpp,
 			    NFSX_V4SESSIONID);
 			NFSBCOPY(sessid, nsep->sess_cbsess.nfsess_sessionid,
 			    NFSX_V4SESSIONID);
-			shp = NFSSESSIONHASH(nsep->sess_sessionid);
-			NFSLOCKSTATE();
-			NFSLOCKSESSION(shp);
-			LIST_INSERT_HEAD(&shp->list, nsep, sess_hash);
-			LIST_INSERT_HEAD(&clp->lc_session, nsep, sess_list);
-			nsep->sess_clp = clp;
-			NFSUNLOCKSESSION(shp);
-			NFSUNLOCKSTATE();
+			if (!sess_replay) {
+			    shp = NFSSESSIONHASH(nsep->sess_sessionid);
+			    NFSLOCKSTATE();
+			    NFSLOCKSESSION(shp);
+			    LIST_INSERT_HEAD(&shp->list, nsep, sess_hash);
+			    LIST_INSERT_HEAD(&clp->lc_session, nsep, sess_list);
+			    nsep->sess_clp = clp;
+			    NFSUNLOCKSESSION(shp);
+			    NFSUNLOCKSTATE();
+			}
 		    }
 		}
 	} else if (clp->lc_flags & LCL_NEEDSCONFIRM) {
@@ -3470,8 +3492,8 @@ nfsrv_openupdate(vnode_t vp, struct nfsstate *new_stp, nfsquad_t clientid,
 	     ((nd->nd_flag & ND_NFSV41) != 0 &&
 	      new_stp->ls_stateid.seqid != 0)))
 		error = NFSERR_OLDSTATEID;
-	if (!error && vnode_vtype(vp) != VREG) {
-		if (vnode_vtype(vp) == VDIR)
+	if (!error && vp->v_type != VREG) {
+		if (vp->v_type == VDIR)
 			error = NFSERR_ISDIR;
 		else
 			error = NFSERR_INVAL;
@@ -6361,9 +6383,12 @@ nfsrv_cache_session(struct nfsrv_descript *nd, struct mbuf **m)
 			}
 			if (cp != NULL)
 				printf("nfsrv_cache_session: no session "
-				    "IPaddr=%s\n", cp);
+				    "IPaddr=%s, check NFS clients for unique "
+				    "/etc/hostid's\n", cp);
 			else
-				printf("nfsrv_cache_session: no session\n");
+				printf("nfsrv_cache_session: no session, "
+				    "check NFS clients for unique "
+				    "/etc/hostid's\n");
 			free(buf, M_TEMP);
 		}
 		m_freem(*m);
@@ -6636,8 +6661,8 @@ nfsv4_setcbsequence(struct nfsrv_descript *nd, struct nfsclient *clp,
 	if (error != 0)
 		return (error);
 	sep = *sepp;
-	(void)nfsv4_sequencelookup(NULL, &sep->sess_cbsess, slotposp, &maxslot,
-	    &slotseq, sessionid);
+	nfsv4_sequencelookup(NULL, &sep->sess_cbsess, slotposp, &maxslot,
+	    &slotseq, sessionid, true);
 	KASSERT(maxslot >= 0, ("nfsv4_setcbsequence neg maxslot"));
 
 	/* Build the Sequence arguments. */
@@ -6645,6 +6670,8 @@ nfsv4_setcbsequence(struct nfsrv_descript *nd, struct nfsclient *clp,
 	bcopy(sessionid, tl, NFSX_V4SESSIONID);
 	tl += NFSX_V4SESSIONID / NFSX_UNSIGNED;
 	nd->nd_slotseq = tl;
+	nd->nd_slotid = *slotposp;
+	nd->nd_flag |= ND_HASSLOTID;
 	*tl++ = txdr_unsigned(slotseq);
 	*tl++ = txdr_unsigned(*slotposp);
 	*tl++ = txdr_unsigned(maxslot);
@@ -6817,9 +6844,14 @@ nfsrv_layoutget(struct nfsrv_descript *nd, vnode_t vp, struct nfsexstuff *exp,
 			NFSD_DEBUG(1, "ret layout too small\n");
 			return (NFSERR_TOOSMALL);
 		}
-		if (*iomode == NFSLAYOUTIOMODE_RW)
+		if (*iomode == NFSLAYOUTIOMODE_RW) {
+			if ((lyp->lay_flags & NFSLAY_NOSPC) != 0) {
+				NFSUNLOCKLAYOUT(lhyp);
+				NFSD_DEBUG(1, "ret layout nospace\n");
+				return (NFSERR_NOSPC);
+			}
 			lyp->lay_flags |= NFSLAY_RW;
-		else
+		} else
 			lyp->lay_flags |= NFSLAY_READ;
 		NFSBCOPY(lyp->lay_xdr, layp, lyp->lay_layoutlen);
 		*layoutlenp = lyp->lay_layoutlen;
@@ -6892,6 +6924,7 @@ nfsrv_filelayout(struct nfsrv_descript *nd, int iomode, fhandle_t *fhp,
 	NFSBCOPY(fhp, &lyp->lay_fh, sizeof(*fhp));
 	lyp->lay_clientid.qval = nd->nd_clientid.qval;
 	lyp->lay_fsid = fs;
+	NFSBCOPY(devid, lyp->lay_deviceid, NFSX_V4DEVICEID);
 
 	/* Fill in the xdr for the files layout. */
 	tl = (uint32_t *)lyp->lay_xdr;
@@ -6941,6 +6974,7 @@ nfsrv_flexlayout(struct nfsrv_descript *nd, int iomode, int mirrorcnt,
 	lyp->lay_clientid.qval = nd->nd_clientid.qval;
 	lyp->lay_fsid = fs;
 	lyp->lay_mirrorcnt = mirrorcnt;
+	NFSBCOPY(devid, lyp->lay_deviceid, NFSX_V4DEVICEID);
 
 	/* Fill in the xdr for the files layout. */
 	tl = (uint32_t *)lyp->lay_xdr;
@@ -6994,14 +7028,25 @@ nfsrv_flexlayouterr(struct nfsrv_descript *nd, uint32_t *layp, int maxcnt,
 	char devid[NFSX_V4DEVICEID];
 
 	tl = layp;
-	cnt = fxdr_unsigned(int, *tl++);
+	maxcnt -= NFSX_UNSIGNED;
+	if (maxcnt > 0)
+		cnt = fxdr_unsigned(int, *tl++);
+	else
+		cnt = 0;
 	NFSD_DEBUG(4, "flexlayouterr cnt=%d\n", cnt);
 	for (i = 0; i < cnt; i++) {
+		maxcnt -= NFSX_STATEID + 2 * NFSX_HYPER +
+		    NFSX_UNSIGNED;
+		if (maxcnt <= 0)
+			break;
 		/* Skip offset, length and stateid for now. */
 		tl += (4 + NFSX_STATEID / NFSX_UNSIGNED);
 		errcnt = fxdr_unsigned(int, *tl++);
 		NFSD_DEBUG(4, "flexlayouterr errcnt=%d\n", errcnt);
 		for (j = 0; j < errcnt; j++) {
+			maxcnt -= NFSX_V4DEVICEID + 2 * NFSX_UNSIGNED;
+			if (maxcnt < 0)
+				break;
 			NFSBCOPY(tl, devid, NFSX_V4DEVICEID);
 			tl += (NFSX_V4DEVICEID / NFSX_UNSIGNED);
 			stat = fxdr_unsigned(int, *tl++);
@@ -7009,11 +7054,16 @@ nfsrv_flexlayouterr(struct nfsrv_descript *nd, uint32_t *layp, int maxcnt,
 			NFSD_DEBUG(4, "flexlayouterr op=%d stat=%d\n", opnum,
 			    stat);
 			/*
-			 * Except for NFSERR_ACCES and NFSERR_STALE errors,
-			 * disable the mirror.
+			 * Except for NFSERR_ACCES, NFSERR_STALE and
+			 * NFSERR_NOSPC errors, disable the mirror.
 			 */
-			if (stat != NFSERR_ACCES && stat != NFSERR_STALE)
+			if (stat != NFSERR_ACCES && stat != NFSERR_STALE &&
+			    stat != NFSERR_NOSPC)
 				nfsrv_delds(devid, p);
+
+			/* For NFSERR_NOSPC, mark all devids and layouts. */
+			if (stat == NFSERR_NOSPC)
+				nfsrv_marknospc(devid, true);
 		}
 	}
 }
@@ -7289,7 +7339,7 @@ nfsrv_layoutreturn(struct nfsrv_descript *nd, vnode_t vp,
 			}
 			NFSDRECALLUNLOCK();
 		}
-		if (layouttype == NFSLAYOUT_FLEXFILE)
+		if (layouttype == NFSLAYOUT_FLEXFILE && layp != NULL)
 			nfsrv_flexlayouterr(nd, layp, maxcnt, p);
 	} else if (kind == NFSV4LAYOUTRET_FSID)
 		nfsrv_freelayouts(&nd->nd_clientid,
@@ -7388,6 +7438,7 @@ nfsrv_addlayout(struct nfsrv_descript *nd, struct nfslayout **lypp,
 	/* Insert the new layout in the lists. */
 	*lypp = NULL;
 	atomic_add_int(&nfsrv_layoutcnt, 1);
+	nfsstatsv1.srvlayouts++;
 	NFSBCOPY(lyp->lay_xdr, layp, lyp->lay_layoutlen);
 	*layoutlenp = lyp->lay_layoutlen;
 	TAILQ_INSERT_HEAD(&lhyp->list, lyp, lay_list);
@@ -7480,6 +7531,7 @@ nfsrv_freelayout(struct nfslayouthead *lhp, struct nfslayout *lyp)
 
 	NFSD_DEBUG(4, "Freelayout=%p\n", lyp);
 	atomic_add_int(&nfsrv_layoutcnt, -1);
+	nfsstatsv1.srvlayouts--;
 	TAILQ_REMOVE(lhp, lyp, lay_list);
 	free(lyp, M_NFSDSTATE);
 }
@@ -7630,7 +7682,7 @@ nfsrv_setdsserver(char *dspathp, char *mdspathp, NFSPROC_T *p,
 	NFSD_DEBUG(4, "setdssrv path=%s\n", dspathp);
 	*dsp = NULL;
 	NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF, UIO_SYSSPACE,
-	    dspathp, p);
+	    dspathp);
 	error = namei(&nd);
 	NFSD_DEBUG(4, "lookup=%d\n", error);
 	if (error != 0)
@@ -7666,7 +7718,7 @@ nfsrv_setdsserver(char *dspathp, char *mdspathp, NFSPROC_T *p,
 	for (i = 0; i < nfsrv_dsdirsize; i++) {
 		snprintf(dsdirpath, dsdirsize, "%s/ds%d", dspathp, i);
 		NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF,
-		    UIO_SYSSPACE, dsdirpath, p);
+		    UIO_SYSSPACE, dsdirpath);
 		error = namei(&nd);
 		NFSD_DEBUG(4, "dsdirpath=%s lookup=%d\n", dsdirpath, error);
 		if (error != 0)
@@ -7694,7 +7746,7 @@ nfsrv_setdsserver(char *dspathp, char *mdspathp, NFSPROC_T *p,
 		 * system.
 		 */
 		NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF,
-		    UIO_SYSSPACE, mdspathp, p);
+		    UIO_SYSSPACE, mdspathp);
 		error = namei(&nd);
 		NFSD_DEBUG(4, "mds lookup=%d\n", error);
 		if (error != 0)
@@ -8374,10 +8426,10 @@ tryagain2:
 	 * NFS mount and they are not suspendable at this time.
 	 */
 	if (ret == 0)
-		ret = vn_start_write(vp, &mp, V_WAIT | PCATCH);
+		ret = vn_start_write(vp, &mp, V_WAIT | V_PCATCH);
 	if (ret == 0) {
 		tvmp = dvp->v_mount;
-		ret = vn_start_write(NULL, &tvmp, V_WAIT | PCATCH);
+		ret = vn_start_write(NULL, &tvmp, V_WAIT | V_PCATCH);
 	}
 
 	/*
@@ -8553,7 +8605,7 @@ nfsrv_mdscopymr(char *mdspathp, char *dspathp, char *curdspathp, char *buf,
 	 */
 	NFSD_DEBUG(4, "mdsopen path=%s\n", mdspathp);
 	NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF, UIO_SYSSPACE,
-	    mdspathp, p);
+	    mdspathp);
 	error = namei(&nd);
 	NFSD_DEBUG(4, "lookup=%d\n", error);
 	if (error != 0)
@@ -8572,7 +8624,7 @@ nfsrv_mdscopymr(char *mdspathp, char *dspathp, char *curdspathp, char *buf,
 		 */
 		NFSD_DEBUG(4, "curmdsdev path=%s\n", curdspathp);
 		NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF,
-		    UIO_SYSSPACE, curdspathp, p);
+		    UIO_SYSSPACE, curdspathp);
 		error = namei(&nd);
 		NFSD_DEBUG(4, "ds lookup=%d\n", error);
 		if (error != 0) {
@@ -8612,7 +8664,7 @@ nfsrv_mdscopymr(char *mdspathp, char *dspathp, char *curdspathp, char *buf,
 		/* Look up the nfsdev path and find the nfsdev structure. */
 		NFSD_DEBUG(4, "mdsdev path=%s\n", dspathp);
 		NDINIT(&nd, LOOKUP, FOLLOW | LOCKSHARED | LOCKLEAF,
-		    UIO_SYSSPACE, dspathp, p);
+		    UIO_SYSSPACE, dspathp);
 		error = namei(&nd);
 		NFSD_DEBUG(4, "ds lookup=%d\n", error);
 		if (error != 0) {
@@ -8771,4 +8823,42 @@ nfsrv_findmirroredds(struct nfsmount *nmp)
 		return (NULL);
 	}
 	return (fndds);
+}
+
+/*
+ * Mark the appropriate devid and all associated layout as "out of space".
+ */
+void
+nfsrv_marknospc(char *devid, bool setit)
+{
+	struct nfsdevice *ds;
+	struct nfslayout *lyp;
+	struct nfslayouthash *lhyp;
+	int i;
+
+	NFSDDSLOCK();
+	TAILQ_FOREACH(ds, &nfsrv_devidhead, nfsdev_list) {
+		if (NFSBCMP(ds->nfsdev_deviceid, devid, NFSX_V4DEVICEID) == 0) {
+			NFSD_DEBUG(1, "nfsrv_marknospc: devid %d\n", setit);
+			ds->nfsdev_nospc = setit;
+		}
+	}
+	NFSDDSUNLOCK();
+
+	for (i = 0; i < nfsrv_layouthashsize; i++) {
+		lhyp = &nfslayouthash[i];
+		NFSLOCKLAYOUT(lhyp);
+		TAILQ_FOREACH(lyp, &lhyp->list, lay_list) {
+			if (NFSBCMP(lyp->lay_deviceid, devid,
+			    NFSX_V4DEVICEID) == 0) {
+				NFSD_DEBUG(1, "nfsrv_marknospc: layout %d\n",
+				    setit);
+				if (setit)
+					lyp->lay_flags |= NFSLAY_NOSPC;
+				else
+					lyp->lay_flags &= ~NFSLAY_NOSPC;
+			}
+		}
+		NFSUNLOCKLAYOUT(lhyp);
+	}
 }

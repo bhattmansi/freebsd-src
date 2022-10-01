@@ -195,7 +195,7 @@ __rpc_socket2sockinfo(struct socket *so, struct __rpc_sockinfo *sip)
 	int error;
 
 	CURVNET_SET(so->so_vnet);
-	error = so->so_proto->pr_usrreqs->pru_sockaddr(so, &sa);
+	error = so->so_proto->pr_sockaddr(so, &sa);
 	CURVNET_RESTORE();
 	if (error)
 		return 0;
@@ -309,7 +309,7 @@ __rpc_taddr2uaddr_af(int af, const struct netbuf *nbuf)
 	struct sockaddr_in6 *sin6;
 	char namebuf6[INET6_ADDRSTRLEN];
 #endif
-	u_int16_t port;
+	uint16_t port;
 
 	sbuf_new(&sb, NULL, 0, SBUF_AUTOEXTEND);
 
@@ -708,7 +708,7 @@ __rpc_sockisbound(struct socket *so)
 	int error, bound;
 
 	CURVNET_SET(so->so_vnet);
-	error = so->so_proto->pr_usrreqs->pru_sockaddr(so, &sa);
+	error = so->so_proto->pr_sockaddr(so, &sa);
 	CURVNET_RESTORE();
 	if (error)
 		return (0);
@@ -793,12 +793,12 @@ bindresvport(struct socket *so, struct sockaddr *sa)
 #endif
 	struct sockopt opt;
 	int proto, portrange, portlow;
-	u_int16_t *portp;
+	uint16_t *portp;
 	socklen_t salen;
 
 	if (sa == NULL) {
 		CURVNET_SET(so->so_vnet);
-		error = so->so_proto->pr_usrreqs->pru_sockaddr(so, &sa);
+		error = so->so_proto->pr_sockaddr(so, &sa);
 		CURVNET_RESTORE();
 		if (error)
 			return (error);

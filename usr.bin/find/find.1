@@ -31,7 +31,7 @@
 .\"	@(#)find.1	8.7 (Berkeley) 5/9/95
 .\" $FreeBSD$
 .\"
-.Dd May 13, 2021
+.Dd August 2, 2022
 .Dt FIND 1
 .Os
 .Sh NAME
@@ -158,6 +158,27 @@ Note:
 and
 .Ql "find | sort"
 may give different results.
+.Pp
+For example,
+.Ql find -s
+puts a directory
+.Ql Ar foo
+with all its contents before a directory
+.Ql Ar foo .
+but
+.Ql "find | sort"
+puts the directory name
+.Ql Ar foo .
+before any string like
+.Ql Ar foo/bar
+because
+.Ql .\&
+goes before
+.Ql /
+in ASCII.
+In locales other than
+.Ar C
+results may vary more due to collation differences.
 .It Fl x
 Prevent
 .Nm
@@ -659,8 +680,7 @@ In addition, if
 then
 .Ar file
 is instead interpreted as a direct date specification of the form
-understood by
-.Xr cvs 1 .
+understood by ISO8601 or RFC822.
 Note that
 .Ic -newermm
 is equivalent to
@@ -776,7 +796,7 @@ is specified, the given expression shall be effectively replaced by
 .It Ic -print0
 This primary always evaluates to true.
 It prints the pathname of the current file to standard output, followed by an
-.Tn ASCII
+ASCII
 .Dv NUL
 character (character code 0).
 .It Ic -prune
@@ -1001,7 +1021,6 @@ section below for details.
 .Sh SEE ALSO
 .Xr chflags 1 ,
 .Xr chmod 1 ,
-.Xr cvs 1 ,
 .Xr locate 1 ,
 .Xr lsvfs 1 ,
 .Xr whereis 1 ,
@@ -1013,6 +1032,7 @@ section below for details.
 .Xr getgrent 3 ,
 .Xr getpwent 3 ,
 .Xr strmode 3 ,
+.Xr ascii 7 ,
 .Xr re_format 7 ,
 .Xr symlink 7
 .Sh STANDARDS
@@ -1094,7 +1114,7 @@ It was rewritten for
 .At v5
 and later be enhanced for the Programmer's Workbench (PWB).
 These changes were later incorporated in
-.At v7.
+.At v7 .
 .Sh BUGS
 The special characters used by
 .Nm

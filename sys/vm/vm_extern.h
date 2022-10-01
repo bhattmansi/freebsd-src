@@ -42,6 +42,8 @@ struct vnode;
 struct vmem;
 
 #ifdef _KERNEL
+#include <sys/kassert.h>
+
 struct cdev;
 struct cdevsw;
 struct domainset;
@@ -55,20 +57,20 @@ vm_offset_t kmap_alloc_wait(vm_map_t, vm_size_t);
 void kmap_free_wakeup(vm_map_t, vm_offset_t, vm_size_t);
 
 /* These operate on virtual addresses backed by memory. */
-vm_offset_t kmem_alloc_attr(vm_size_t size, int flags,
+void *kmem_alloc_attr(vm_size_t size, int flags,
     vm_paddr_t low, vm_paddr_t high, vm_memattr_t memattr);
-vm_offset_t kmem_alloc_attr_domainset(struct domainset *ds, vm_size_t size,
+void *kmem_alloc_attr_domainset(struct domainset *ds, vm_size_t size,
     int flags, vm_paddr_t low, vm_paddr_t high, vm_memattr_t memattr);
-vm_offset_t kmem_alloc_contig(vm_size_t size, int flags,
+void *kmem_alloc_contig(vm_size_t size, int flags,
     vm_paddr_t low, vm_paddr_t high, u_long alignment, vm_paddr_t boundary,
     vm_memattr_t memattr);
-vm_offset_t kmem_alloc_contig_domainset(struct domainset *ds, vm_size_t size,
+void *kmem_alloc_contig_domainset(struct domainset *ds, vm_size_t size,
     int flags, vm_paddr_t low, vm_paddr_t high, u_long alignment,
     vm_paddr_t boundary, vm_memattr_t memattr);
-vm_offset_t kmem_malloc(vm_size_t size, int flags);
-vm_offset_t kmem_malloc_domainset(struct domainset *ds, vm_size_t size,
+void *kmem_malloc(vm_size_t size, int flags);
+void *kmem_malloc_domainset(struct domainset *ds, vm_size_t size,
     int flags);
-void kmem_free(vm_offset_t addr, vm_size_t size);
+void kmem_free(void *addr, vm_size_t size);
 
 /* This provides memory for previously allocated address space. */
 int kmem_back(vm_object_t, vm_offset_t, vm_size_t, int);
@@ -133,5 +135,36 @@ u_int vm_active_count(void);
 u_int vm_inactive_count(void);
 u_int vm_laundry_count(void);
 u_int vm_wait_count(void);
+
+/*
+ * Is pa a multiple of alignment, which is a power-of-two?
+ */
+static inline bool
+vm_addr_align_ok(vm_paddr_t pa, u_long alignment)
+{
+	KASSERT(powerof2(alignment), ("%s: alignment is not a power of 2: %#lx",
+	    __func__, alignment));
+	return ((pa & (alignment - 1)) == 0);
+}
+
+/*
+ * Do the first and last addresses of a range match in all bits except the ones
+ * in -boundary (a power-of-two)?  For boundary == 0, all addresses match.
+ */
+static inline bool
+vm_addr_bound_ok(vm_paddr_t pa, vm_paddr_t size, vm_paddr_t boundary)
+{
+	KASSERT(powerof2(boundary), ("%s: boundary is not a power of 2: %#jx",
+	    __func__, (uintmax_t)boundary));
+	return (((pa ^ (pa + size - 1)) & -boundary) == 0);
+}
+
+static inline bool
+vm_addr_ok(vm_paddr_t pa, vm_paddr_t size, u_long alignment,
+    vm_paddr_t boundary)
+{
+	return (vm_addr_align_ok(pa, alignment) &&
+	    vm_addr_bound_ok(pa, size, boundary));
+}
 #endif				/* _KERNEL */
 #endif				/* !_VM_EXTERN_H_ */

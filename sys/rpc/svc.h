@@ -176,7 +176,7 @@ typedef struct __rpc_svcxprt {
 	int		xp_type;	/* transport type */
 	int		xp_idletimeout; /* idle time before closing */
 	time_t		xp_lastactive;	/* time of last RPC */
-	u_int64_t	xp_sockref;	/* set by nfsv4 to identify socket */
+	uint64_t	xp_sockref;	/* set by nfsv4 to identify socket */
 	int		xp_upcallset;	/* socket upcall is set up */
 	uint32_t	xp_snd_cnt;	/* # of bytes to send to socket */
 	uint32_t	xp_snt_cnt;	/* # of bytes sent to socket */
@@ -185,6 +185,7 @@ typedef struct __rpc_svcxprt {
 	uint64_t	xp_sslsec;	/* Userland SSL * */
 	uint64_t	xp_sslusec;
 	uint64_t	xp_sslrefno;
+	int		xp_sslproc;	/* Which upcall daemon being used */
 	int		xp_ngrps;	/* Cred. from TLS cert. */
 	uid_t		xp_uid;
 	gid_t		*xp_gidp;

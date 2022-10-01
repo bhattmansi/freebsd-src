@@ -207,7 +207,11 @@ zfs_file_getattr(zfs_file_t *fp, zfs_file_attr_t *zfattr)
 
 	td = curthread;
 
+#if __FreeBSD_version < 1400037
+	rc = fo_stat(fp, &sb, td->td_ucred, td);
+#else
 	rc = fo_stat(fp, &sb, td->td_ucred);
+#endif
 	if (rc)
 		return (SET_ERROR(rc));
 	zfattr->zfa_size = sb.st_size;
@@ -222,7 +226,11 @@ zfs_vop_fsync(vnode_t *vp)
 	struct mount *mp;
 	int error;
 
+#if __FreeBSD_version < 1400068
 	if ((error = vn_start_write(vp, &mp, V_WAIT | PCATCH)) != 0)
+#else
+	if ((error = vn_start_write(vp, &mp, V_WAIT | V_PCATCH)) != 0)
+#endif
 		goto drop;
 	vn_lock(vp, LK_EXCLUSIVE | LK_RETRY);
 	error = VOP_FSYNC(vp, MNT_WAIT, curthread);

@@ -25,6 +25,9 @@
  * $FreeBSD$
  */
 
+#include "opt_rss.h"
+#include "opt_ratelimit.h"
+
 #include <linux/kref.h>
 #include <linux/random.h>
 #include <linux/delay.h>
@@ -32,7 +35,7 @@
 #include <rdma/ib_umem.h>
 #include <rdma/ib_umem_odp.h>
 #include <rdma/ib_verbs.h>
-#include "mlx5_ib.h"
+#include <dev/mlx5/mlx5_ib/mlx5_ib.h>
 
 enum {
 	MAX_PENDING_REG_MR = 8,
@@ -1282,10 +1285,13 @@ static int clean_mr(struct mlx5_ib_mr *mr)
 	mlx5_free_priv_descs(mr);
 
 	if (!umred) {
+		u32 key = mr->mmkey.key;
+
 		err = destroy_mkey(dev, mr);
+		kfree(mr);
 		if (err) {
 			mlx5_ib_warn(dev, "failed to destroy mkey 0x%x (%d)\n",
-				     mr->mmkey.key, err);
+				     key, err);
 			return err;
 		}
 	} else {
@@ -1296,9 +1302,6 @@ static int clean_mr(struct mlx5_ib_mr *mr)
 		}
 		free_cached_mr(dev, mr);
 	}
-
-	if (!umred)
-		kfree(mr);
 
 	return 0;
 }

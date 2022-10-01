@@ -135,6 +135,7 @@ static const struct {
 	{0x3b298086, 0x00, "Intel Ibex Peak-M",	0},
 	{0x3b2c8086, 0x00, "Intel Ibex Peak-M (RAID)",	0},
 	{0x3b2f8086, 0x00, "Intel Ibex Peak-M",	0},
+	{0x06d68086, 0x00, "Intel Comet Lake (RAID)", 0},
 	{0x19b08086, 0x00, "Intel Denverton",	0},
 	{0x19b18086, 0x00, "Intel Denverton",	0},
 	{0x19b28086, 0x00, "Intel Denverton",	0},
@@ -191,6 +192,7 @@ static const struct {
 	{0x23a38086, 0x00, "Intel Coleto Creek",	0},
 	{0x31e38086, 0x00, "Intel Gemini Lake",	0},
 	{0x5ae38086, 0x00, "Intel Apollo Lake",	0},
+	{0x7ae28086, 0x00, "Intel Alder Lake",	0},
 	{0x8c028086, 0x00, "Intel Lynx Point",	0},
 	{0x8c038086, 0x00, "Intel Lynx Point",	0},
 	{0x8c048086, 0x00, "Intel Lynx Point (RAID)",	0},
@@ -744,15 +746,18 @@ static device_method_t ahci_methods[] = {
 	DEVMETHOD(bus_get_dma_tag,  ahci_get_dma_tag),
 	DEVMETHOD_END
 };
+
 static driver_t ahci_driver = {
         "ahci",
         ahci_methods,
         sizeof(struct ahci_controller)
 };
-DRIVER_MODULE(ahci, pci, ahci_driver, ahci_devclass, NULL, NULL);
+
+DRIVER_MODULE(ahci, pci, ahci_driver, NULL, NULL);
 /* Also matches class / subclass / progid XXX need to add when we have masking support */
 MODULE_PNP_INFO("W32:vendor/device", pci, ahci, ahci_ids,
     nitems(ahci_ids) - 1);
+
 static device_method_t ahci_ata_methods[] = {
 	DEVMETHOD(device_probe,     ahci_ata_probe),
 	DEVMETHOD(device_attach,    ahci_pci_attach),
@@ -767,9 +772,11 @@ static device_method_t ahci_ata_methods[] = {
 	DEVMETHOD(bus_child_location, ahci_child_location),
 	DEVMETHOD_END
 };
+
 static driver_t ahci_ata_driver = {
         "ahci",
         ahci_ata_methods,
         sizeof(struct ahci_controller)
 };
-DRIVER_MODULE(ahci, atapci, ahci_ata_driver, ahci_devclass, NULL, NULL);
+
+DRIVER_MODULE(ahci, atapci, ahci_ata_driver, NULL, NULL);

@@ -283,6 +283,61 @@ mana_gd_free_memory(struct gdma_mem_info *gmi)
 	bus_dma_tag_destroy(gmi->dma_tag);
 }
 
+int
+mana_gd_destroy_doorbell_page(struct gdma_context *gc, int doorbell_page)
+{
+	struct gdma_destroy_resource_range_req req = {};
+	struct gdma_resp_hdr resp = {};
+	int err;
+
+	mana_gd_init_req_hdr(&req.hdr, GDMA_DESTROY_RESOURCE_RANGE,
+	    sizeof(req), sizeof(resp));
+
+	req.resource_type = GDMA_RESOURCE_DOORBELL_PAGE;
+	req.num_resources = 1;
+	req.allocated_resources = doorbell_page;
+
+	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
+	if (err || resp.status) {
+		device_printf(gc->dev,
+		    "Failed to destroy doorbell page: ret %d, 0x%x\n",
+		    err, resp.status);
+		return err ? err : EPROTO;
+	}
+
+	return 0;
+}
+
+int
+mana_gd_allocate_doorbell_page(struct gdma_context *gc, int *doorbell_page)
+{
+	struct gdma_allocate_resource_range_req req = {};
+	struct gdma_allocate_resource_range_resp resp = {};
+	int err;
+
+	mana_gd_init_req_hdr(&req.hdr, GDMA_ALLOCATE_RESOURCE_RANGE,
+	    sizeof(req), sizeof(resp));
+
+	req.resource_type = GDMA_RESOURCE_DOORBELL_PAGE;
+	req.num_resources = 1;
+	req.alignment = 1;
+
+	/* Have GDMA start searching from 0 */
+	req.allocated_resources = 0;
+
+	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
+	if (err || resp.hdr.status) {
+		device_printf(gc->dev,
+		    "Failed to allocate doorbell page: ret %d, 0x%x\n",
+		    err, resp.hdr.status);
+		return err ? err : EPROTO;
+	}
+
+	*doorbell_page = resp.allocated_resources;
+
+	return 0;
+}
+
 static int
 mana_gd_create_hw_eq(struct gdma_context *gc,
     struct gdma_queue *queue)
@@ -301,7 +356,7 @@ mana_gd_create_hw_eq(struct gdma_context *gc,
 	req.type = queue->type;
 	req.pdid = queue->gdma_dev->pdid;
 	req.doolbell_id = queue->gdma_dev->doorbell;
-	req.gdma_region = queue->mem_info.gdma_region;
+	req.gdma_region = queue->mem_info.dma_region_handle;
 	req.queue_size = queue->queue_size;
 	req.log2_throttle_limit = queue->eq.log2_throttle_limit;
 	req.eq_pci_msix_index = queue->eq.msix_index;
@@ -316,7 +371,7 @@ mana_gd_create_hw_eq(struct gdma_context *gc,
 
 	queue->id = resp.queue_index;
 	queue->eq.disable_needed = true;
-	queue->mem_info.gdma_region = GDMA_INVALID_DMA_REGION;
+	queue->mem_info.dma_region_handle = GDMA_INVALID_DMA_REGION;
 	return 0;
 }
 
@@ -422,7 +477,7 @@ mana_gd_wq_ring_doorbell(struct gdma_context *gc, struct gdma_queue *queue)
 }
 
 void
-mana_gd_arm_cq(struct gdma_queue *cq)
+mana_gd_ring_cq(struct gdma_queue *cq, uint8_t arm_bit)
 {
 	struct gdma_context *gc = cq->gdma_dev->gdma_context;
 
@@ -431,7 +486,7 @@ mana_gd_arm_cq(struct gdma_queue *cq)
 	uint32_t head = cq->head % (num_cqe << GDMA_CQE_OWNER_BITS);
 
 	mana_gd_ring_doorbell(gc, cq->gdma_dev->doorbell, cq->type, cq->id,
-	    head, SET_ARM_BIT);
+	    head, arm_bit);
 }
 
 static void
@@ -508,7 +563,6 @@ mana_gd_process_eq_events(void *arg)
 	struct gdma_context *gc;
 	uint32_t head, num_eqe;
 	struct gdma_eqe *eqe;
-	unsigned int arm_bit;
 	int i, j;
 
 	gc = eq->gdma_dev->gdma_context;
@@ -557,6 +611,8 @@ mana_gd_process_eq_events(void *arg)
 			break;
 		}
 
+		rmb();
+
 		mana_gd_process_eqe(eq);
 
 		eq->head++;
@@ -565,66 +621,17 @@ mana_gd_process_eq_events(void *arg)
 	bus_dmamap_sync(eq->mem_info.dma_tag, eq->mem_info.dma_map,
 	    BUS_DMASYNC_PREREAD);
 
-	/* Always rearm the EQ for HWC. */
-	if (mana_gd_is_hwc(eq->gdma_dev)) {
-		arm_bit = SET_ARM_BIT;
-	} else if (eq->eq.work_done < eq->eq.budget &&
-	    eq->eq.do_not_ring_db == false) {
-		arm_bit = SET_ARM_BIT;
-	} else {
-		arm_bit = 0;
-	}
-
 	head = eq->head % (num_eqe << GDMA_EQE_OWNER_BITS);
 
 	mana_gd_ring_doorbell(gc, eq->gdma_dev->doorbell, eq->type, eq->id,
-	    head, arm_bit);
-}
-
-#define MANA_POLL_BUDGET	8
-#define MANA_RX_BUDGET		256
-
-static void
-mana_poll(void *arg, int pending)
-{
-	struct gdma_queue *eq = arg;
-	int i;
-
-	eq->eq.work_done = 0;
-	eq->eq.budget = MANA_RX_BUDGET;
-
-	for (i = 0; i < MANA_POLL_BUDGET; i++) {
-		/*
-		 * If this is the last loop, set the budget big enough
-		 * so it will arm the EQ any way.
-		 */
-		if (i == (MANA_POLL_BUDGET - 1))
-			eq->eq.budget = CQE_POLLING_BUFFER + 1;
-
-		mana_gd_process_eq_events(eq);
-
-		if (eq->eq.work_done < eq->eq.budget)
-			break;
-
-		eq->eq.work_done = 0;
-	}
-}
-
-static void
-mana_gd_schedule_task(void *arg)
-{
-	struct gdma_queue *eq = arg;
-
-	taskqueue_enqueue(eq->eq.cleanup_tq, &eq->eq.cleanup_task);
+	    head, SET_ARM_BIT);
 }
 
 static int
 mana_gd_register_irq(struct gdma_queue *queue,
     const struct gdma_queue_spec *spec)
 {
-	static int mana_last_bind_cpu = -1;
 	struct gdma_dev *gd = queue->gdma_dev;
-	bool is_mana = mana_gd_is_mana(gd);
 	struct gdma_irq_context *gic;
 	struct gdma_context *gc;
 	struct gdma_resource *r;
@@ -659,39 +666,6 @@ mana_gd_register_irq(struct gdma_queue *queue,
 
 	gic = &gc->irq_contexts[msi_index];
 
-	if (is_mana) {
-		struct mana_port_context *apc = if_getsoftc(spec->eq.ndev);
-		queue->eq.do_not_ring_db = false;
-
-		NET_TASK_INIT(&queue->eq.cleanup_task, 0, mana_poll, queue);
-		queue->eq.cleanup_tq =
-		    taskqueue_create_fast("mana eq cleanup",
-		    M_WAITOK, taskqueue_thread_enqueue,
-		    &queue->eq.cleanup_tq);
-
-		if (mana_last_bind_cpu < 0)
-			mana_last_bind_cpu = CPU_FIRST();
-		queue->eq.cpu = mana_last_bind_cpu;
-		mana_last_bind_cpu = CPU_NEXT(mana_last_bind_cpu);
-
-		/* XXX Name is not optimal. However we have to start
-		 * the task here. Otherwise, test eq will have no
-		 * handler.
-		 */
-		if (apc->bind_cleanup_thread_cpu) {
-			cpuset_t cpu_mask;
-			CPU_SETOF(queue->eq.cpu, &cpu_mask);
-			taskqueue_start_threads_cpuset(&queue->eq.cleanup_tq,
-			    1, PI_NET, &cpu_mask,
-			    "mana eq poll msix %u on cpu %d",
-			    msi_index, queue->eq.cpu);
-		} else {
-
-			taskqueue_start_threads(&queue->eq.cleanup_tq, 1,
-			    PI_NET, "mana eq poll on msix %u", msi_index);
-		}
-	}
-
 	if (unlikely(gic->handler || gic->arg)) {
 		device_printf(gc->dev,
 		    "interrupt handler or arg already assigned, "
@@ -700,10 +674,7 @@ mana_gd_register_irq(struct gdma_queue *queue,
 
 	gic->arg = queue;
 
-	if (is_mana)
-		gic->handler = mana_gd_schedule_task;
-	else
-		gic->handler = mana_gd_process_eq_events;
+	gic->handler = mana_gd_process_eq_events;
 
 	mana_dbg(NULL, "registered msix index %d vector %d irq %ju\n",
 	    msi_index, gic->msix_e.vector, rman_get_start(gic->res));
@@ -809,15 +780,6 @@ mana_gd_destroy_eq(struct gdma_context *gc, bool flush_evenets,
 	}
 
 	mana_gd_deregiser_irq(queue);
-
-	if (mana_gd_is_mana(queue->gdma_dev)) {
-		while (taskqueue_cancel(queue->eq.cleanup_tq,
-		    &queue->eq.cleanup_task, NULL))
-			taskqueue_drain(queue->eq.cleanup_tq,
-			    &queue->eq.cleanup_task);
-
-		taskqueue_free(queue->eq.cleanup_tq);
-	}
 
 	if (queue->eq.disable_needed)
 		mana_gd_disable_queue(queue);
@@ -941,26 +903,31 @@ free_q:
 	return err;
 }
 
-static void
-mana_gd_destroy_dma_region(struct gdma_context *gc, uint64_t gdma_region)
+int
+mana_gd_destroy_dma_region(struct gdma_context *gc,
+    gdma_obj_handle_t dma_region_handle)
 {
 	struct gdma_destroy_dma_region_req req = {};
 	struct gdma_general_resp resp = {};
 	int err;
 
-	if (gdma_region == GDMA_INVALID_DMA_REGION)
-		return;
+	if (dma_region_handle == GDMA_INVALID_DMA_REGION)
+		return 0;
 
 	mana_gd_init_req_hdr(&req.hdr, GDMA_DESTROY_DMA_REGION, sizeof(req),
 	    sizeof(resp));
-	req.gdma_region = gdma_region;
+	req.dma_region_handle = dma_region_handle;
 
 	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp),
 	    &resp);
-	if (err || resp.hdr.status)
+	if (err || resp.hdr.status) {
 		device_printf(gc->dev,
 		    "Failed to destroy DMA region: %d, 0x%x\n",
 		    err, resp.hdr.status);
+		return EPROTO;
+	}
+
+	return 0;
 }
 
 static int
@@ -982,7 +949,7 @@ mana_gd_create_dma_region(struct gdma_dev *gd,
 		return EINVAL;
 	}
 
-	if (offset_in_page((uint64_t)gmi->virt_addr) != 0) {
+	if (offset_in_page((uintptr_t)gmi->virt_addr) != 0) {
 		mana_err(NULL, "gmi not page aligned: %p\n",
 		    gmi->virt_addr);
 		return EINVAL;
@@ -1015,14 +982,15 @@ mana_gd_create_dma_region(struct gdma_dev *gd,
 	if (err)
 		goto out;
 
-	if (resp.hdr.status || resp.gdma_region == GDMA_INVALID_DMA_REGION) {
+	if (resp.hdr.status ||
+	    resp.dma_region_handle == GDMA_INVALID_DMA_REGION) {
 		device_printf(gc->dev, "Failed to create DMA region: 0x%x\n",
 			resp.hdr.status);
 		err = EPROTO;
 		goto out;
 	}
 
-	gmi->gdma_region = resp.gdma_region;
+	gmi->dma_region_handle = resp.dma_region_handle;
 out:
 	free(req, M_DEVBUF);
 	return err;
@@ -1150,10 +1118,13 @@ mana_gd_destroy_queue(struct gdma_context *gc, struct gdma_queue *queue)
 		return;
 	}
 
-	mana_gd_destroy_dma_region(gc, gmi->gdma_region);
+	mana_gd_destroy_dma_region(gc, gmi->dma_region_handle);
 	mana_gd_free_memory(gmi);
 	free(queue, M_DEVBUF);
 }
+
+#define OS_MAJOR_DIV		100000
+#define OS_BUILD_MOD		1000
 
 int
 mana_gd_verify_vf_version(device_t dev)
@@ -1168,6 +1139,14 @@ mana_gd_verify_vf_version(device_t dev)
 
 	req.protocol_ver_min = GDMA_PROTOCOL_FIRST;
 	req.protocol_ver_max = GDMA_PROTOCOL_LAST;
+
+	req.drv_ver = 0;	/* Unused */
+	req.os_type = 0x30;	/* Other */
+	req.os_ver_major = osreldate / OS_MAJOR_DIV;
+	req.os_ver_minor = (osreldate % OS_MAJOR_DIV) / OS_BUILD_MOD;
+	req.os_ver_build = osreldate % OS_BUILD_MOD;
+	strncpy(req.os_ver_str1, ostype, sizeof(req.os_ver_str1) - 1);
+	strncpy(req.os_ver_str2, osrelease, sizeof(req.os_ver_str2) - 1);
 
 	err = mana_gd_send_request(gc, sizeof(req), &req, sizeof(resp), &resp);
 	if (err || resp.hdr.status) {
@@ -1443,8 +1422,14 @@ mana_gd_read_cqe(struct gdma_queue *cq, struct gdma_comp *comp)
 
 	new_bits = (cq->head / num_cqe) & GDMA_CQE_OWNER_MASK;
 	/* Return -1 if overflow detected. */
-	if (owner_bits != new_bits)
+	if (owner_bits != new_bits) {
+		mana_warn(NULL,
+		    "overflow detected! owner_bits %u != new_bits %u\n",
+		    owner_bits, new_bits);
 		return -1;
+	}
+
+	rmb();
 
 	comp->wq_num = cqe->cqe_info.wq_num;
 	comp->is_sq = cqe->cqe_info.is_sq;
@@ -1523,15 +1508,19 @@ mana_gd_free_res_map(struct gdma_resource *r)
 static void
 mana_gd_init_registers(struct gdma_context *gc)
 {
-	uint64_t bar0_va = rman_get_bushandle(gc->bar0);
+	uintptr_t bar0_va = rman_get_bushandle(gc->bar0);
+	vm_paddr_t bar0_pa = rman_get_start(gc->bar0);
 
 	gc->db_page_size = mana_gd_r32(gc, GDMA_REG_DB_PAGE_SIZE) & 0xFFFF;
 
 	gc->db_page_base =
-	    (void *) (bar0_va + mana_gd_r64(gc, GDMA_REG_DB_PAGE_OFFSET));
+	    (void *)(bar0_va + (size_t)mana_gd_r64(gc, GDMA_REG_DB_PAGE_OFFSET));
+
+	gc->phys_db_page_base =
+	    bar0_pa + mana_gd_r64(gc, GDMA_REG_DB_PAGE_OFFSET);
 
 	gc->shm_base =
-	    (void *) (bar0_va + mana_gd_r64(gc, GDMA_REG_SHM_OFFSET));
+	    (void *)(bar0_va + (size_t)mana_gd_r64(gc, GDMA_REG_SHM_OFFSET));
 
 	mana_dbg(NULL, "db_page_size 0x%xx, db_page_base %p,"
 		    " shm_base %p\n",
@@ -1602,10 +1591,8 @@ mana_gd_setup_irqs(device_t dev)
 	if (max_queues_per_port > MANA_MAX_NUM_QUEUES)
 		max_queues_per_port = MANA_MAX_NUM_QUEUES;
 
-	max_irqs = max_queues_per_port * MAX_PORTS_IN_MANA_DEV;
-
 	/* Need 1 interrupt for the Hardware communication Channel (HWC) */
-	max_irqs++;
+	max_irqs = max_queues_per_port + 1;
 
 	nvec = max_irqs;
 	rc = pci_alloc_msix(dev, &nvec);
@@ -1894,9 +1881,6 @@ mana_gd_attach(device_t dev)
 
 err_clean_up_gdma:
 	mana_hwc_destroy_channel(gc);
-	if (gc->cq_table)
-		free(gc->cq_table, M_DEVBUF);
-	gc->cq_table = NULL;
 err_remove_irq:
 	mana_gd_remove_irqs(dev);
 err_free_pci_res:
@@ -1922,8 +1906,6 @@ mana_gd_detach(device_t dev)
 	mana_remove(&gc->mana);
 
 	mana_hwc_destroy_channel(gc);
-	free(gc->cq_table, M_DEVBUF);
-	gc->cq_table = NULL;
 
 	mana_gd_remove_irqs(dev);
 
@@ -1951,8 +1933,7 @@ static driver_t mana_driver = {
     "mana", mana_methods, sizeof(struct gdma_context),
 };
 
-devclass_t mana_devclass;
-DRIVER_MODULE(mana, pci, mana_driver, mana_devclass, 0, 0);
+DRIVER_MODULE(mana, pci, mana_driver, 0, 0);
 MODULE_PNP_INFO("U16:vendor;U16:device", pci, mana, mana_id_table,
     nitems(mana_id_table) - 1);
 MODULE_DEPEND(mana, pci, 1, 1, 1);

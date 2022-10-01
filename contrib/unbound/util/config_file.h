@@ -41,6 +41,7 @@
 
 #ifndef UTIL_CONFIG_FILE_H
 #define UTIL_CONFIG_FILE_H
+#include "sldns/rrdef.h"
 struct config_stub;
 struct config_auth;
 struct config_view;
@@ -185,8 +186,10 @@ struct config_file {
 	size_t infra_cache_slabs;
 	/** max number of hosts in the infra cache */
 	size_t infra_cache_numhosts;
-	/** min value for infra cache rtt */
+	/** min value for infra cache rtt (min retransmit timeout) */
 	int infra_cache_min_rtt;
+	/** max value for infra cache rtt (max retransmit timeout) */
+	int infra_cache_max_rtt;
 	/** keep probing hosts that are down */
 	int infra_keep_probing;
 	/** delay close of udp-timeouted ports, if 0 no delayclose. in msec */
@@ -205,6 +208,8 @@ struct config_file {
 	/** automatic interface for incoming messages. Uses ipv6 remapping,
 	 * and recvmsg/sendmsg ancillary data to detect interfaces, boolean */
 	int if_automatic;
+	/** extra ports to open if if_automatic enabled, or NULL for default */
+	char* if_automatic_ports;
 	/** SO_RCVBUF size to set on port 53 UDP socket */
 	size_t so_rcvbuf;
 	/** SO_SNDBUF size to set on port 53 UDP socket */
@@ -404,6 +409,8 @@ struct config_file {
 	/** serve expired entries only after trying to update the entries and this
 	 *  timeout (in milliseconds) is reached */
 	int serve_expired_client_timeout;
+	/** serve EDE code 3 - Stale Answer (RFC8914) for expired entries */
+	int ede_serve_expired;
 	/** serve original TTLs rather than decrementing ones */
 	int serve_original_ttl;
 	/** nsec3 maximum iterations per key size, string */
@@ -565,6 +572,10 @@ struct config_file {
 	size_t ip_ratelimit_size;
 	/** ip_ratelimit factor, 0 blocks all, 10 allows 1/10 of traffic */
 	int ip_ratelimit_factor;
+	/** ratelimit backoff, when on, if the limit is reached it is
+	 *  considered an attack and it backs off until 'demand' decreases over
+	 *  the RATE_WINDOW. */
+	int ip_ratelimit_backoff;
 
 	/** ratelimit for domains. 0 is off, otherwise qps (unless overridden) */
 	int ratelimit;
@@ -578,6 +589,13 @@ struct config_file {
 	struct config_str2list* ratelimit_below_domain;
 	/** ratelimit factor, 0 blocks all, 10 allows 1/10 of traffic */
 	int ratelimit_factor;
+	/** ratelimit backoff, when on, if the limit is reached it is
+	 *  considered an attack and it backs off until 'demand' decreases over
+	 *  the RATE_WINDOW. */
+	int ratelimit_backoff;
+
+	/** number of retries on outgoing queries */
+	int outbound_msg_retry;
 	/** minimise outgoing QNAME and hide original QTYPE if possible */
 	int qname_minimisation;
 	/** minimise QNAME in strict mode, minimise according to RFC.
@@ -666,6 +684,8 @@ struct config_file {
 	char* ipset_name_v4;
 	char* ipset_name_v6;
 #endif
+	/** respond with Extended DNS Errors (RFC8914) */
+	int ede;
 };
 
 /** from cfg username, after daemonize setup performed */
@@ -697,6 +717,8 @@ struct config_stub {
 	int isprime;
 	/** if forward-first is set (failover to without if fails) */
 	int isfirst;
+	/** use tcp for queries to this stub */
+	int tcp_upstream;
 	/** use SSL for queries to this stub */
 	int ssl_upstream;
 	/*** no cache */
@@ -741,6 +763,8 @@ struct config_auth {
 	/** Always reply with this CNAME target if the cname override action is
 	 * used */
 	char* rpz_cname;
+	/** signal nxdomain block with unset RA */
+	int rpz_signal_nxdomain_ra;
 	/** Check ZONEMD records for this zone */
 	int zonemd_check;
 	/** Reject absence of ZONEMD records, zone must have one */
@@ -1106,7 +1130,7 @@ int cfg_count_numbers(const char* str);
 int cfg_parse_memsize(const char* str, size_t* res);
 
 /**
- * Parse nsid from string into binary nsid. nsid is either a hexidecimal
+ * Parse nsid from string into binary nsid. nsid is either a hexadecimal
  * string or an ascii string prepended with ascii_ in which case the
  * characters after ascii_ are simply copied.
  * @param str: the string to parse.
@@ -1223,56 +1247,6 @@ char* fname_after_chroot(const char* fname, struct config_file* cfg,
  * @return: malloced string "reversed-ip-name PTR name"
  */
 char* cfg_ptr_reverse(char* str);
-
-/**
- * Append text to the error info for validation.
- * @param qstate: query state.
- * @param str: copied into query region and appended.
- * Failures to allocate are logged.
- */
-void errinf(struct module_qstate* qstate, const char* str);
-
-/**
- * Append text to error info:  from 1.2.3.4
- * @param qstate: query state.
- * @param origin: sock list with origin of trouble. 
- *	Every element added.
- *	If NULL: nothing is added.
- *	if 0len element: 'from cache' is added.
- */
-void errinf_origin(struct module_qstate* qstate, struct sock_list *origin);
-
-/**
- * Append text to error info:  for RRset name type class
- * @param qstate: query state.
- * @param rr: rrset_key.
- */
-void errinf_rrset(struct module_qstate* qstate, struct ub_packed_rrset_key *rr);
-
-/**
- * Append text to error info:  str dname
- * @param qstate: query state.
- * @param str: explanation string
- * @param dname: the dname.
- */
-void errinf_dname(struct module_qstate* qstate, const char* str, 
-	uint8_t* dname);
-
-/**
- * Create error info in string.  For validation failures.
- * @param qstate: query state.
- * @return string or NULL on malloc failure (already logged).
- *    This string is malloced and has to be freed by caller.
- */
-char* errinf_to_str_bogus(struct module_qstate* qstate);
-
-/**
- * Create error info in string.  For other servfails.
- * @param qstate: query state.
- * @return string or NULL on malloc failure (already logged).
- *    This string is malloced and has to be freed by caller.
- */
-char* errinf_to_str_servfail(struct module_qstate* qstate);
 
 /**
  * Used during options parsing

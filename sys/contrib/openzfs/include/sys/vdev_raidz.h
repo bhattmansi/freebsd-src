@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -32,6 +32,7 @@ extern "C" {
 #endif
 
 struct zio;
+struct raidz_col;
 struct raidz_row;
 struct raidz_map;
 #if !defined(_KERNEL)
@@ -49,6 +50,7 @@ void vdev_raidz_generate_parity(struct raidz_map *);
 void vdev_raidz_reconstruct(struct raidz_map *, const int *, int);
 void vdev_raidz_child_done(zio_t *);
 void vdev_raidz_io_done(zio_t *);
+void vdev_raidz_checksum_error(zio_t *, struct raidz_col *, abd_t *);
 
 extern const zio_vsd_ops_t vdev_raidz_vsd_ops;
 

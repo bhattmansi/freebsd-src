@@ -105,17 +105,15 @@ static int pci_vt9p_cfgread(void *, int, int, uint32_t *);
 static void pci_vt9p_neg_features(void *, uint64_t);
 
 static struct virtio_consts vt9p_vi_consts = {
-	"vt9p",			/* our name */
-	1,			/* we support 1 virtqueue */
-	VT9P_CONFIGSPACESZ,	/* config reg size */
-	pci_vt9p_reset,		/* reset */
-	pci_vt9p_notify,	/* device-wide qnotify */
-	pci_vt9p_cfgread,	/* read virtio config */
-	NULL,			/* write virtio config */
-	pci_vt9p_neg_features,	/* apply negotiated features */
-	(1 << 0),		/* our capabilities */
+	.vc_name =	"vt9p",
+	.vc_nvq =	1,
+	.vc_cfgsize =	VT9P_CONFIGSPACESZ,
+	.vc_reset =	pci_vt9p_reset,
+	.vc_qnotify =	pci_vt9p_notify,
+	.vc_cfgread =	pci_vt9p_cfgread,
+	.vc_apply_features = pci_vt9p_neg_features,
+	.vc_hv_caps =	(1 << 0),
 };
-
 
 static void
 pci_vt9p_reset(void *vsc)
@@ -153,7 +151,7 @@ pci_vt9p_get_buffer(struct l9p_request *req, struct iovec *iov, size_t *niov,
 {
 	struct pci_vt9p_request *preq = req->lr_aux;
 	size_t n = preq->vsr_niov - preq->vsr_respidx;
-	
+
 	memcpy(iov, preq->vsr_iov + preq->vsr_respidx,
 	    n * sizeof(struct iovec));
 	*niov = n;
@@ -304,7 +302,7 @@ pci_vt9p_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 
 	sc->vsc_config->tag_len = (uint16_t)strlen(sharename);
 	memcpy(sc->vsc_config->tag, sharename, sc->vsc_config->tag_len);
-	
+
 	if (l9p_backend_fs_init(&sc->vsc_fs_backend, rootfd, ro) != 0) {
 		errno = ENXIO;
 		return (1);
@@ -343,7 +341,7 @@ pci_vt9p_init(struct vmctx *ctx, struct pci_devinst *pi, nvlist_t *nvl)
 	return (0);
 }
 
-struct pci_devemu pci_de_v9p = {
+static const struct pci_devemu pci_de_v9p = {
 	.pe_emu =	"virtio-9p",
 	.pe_legacy_config = pci_vt9p_legacy_config,
 	.pe_init =	pci_vt9p_init,

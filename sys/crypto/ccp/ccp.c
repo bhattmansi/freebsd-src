@@ -378,11 +378,6 @@ ccp_probesession(device_t dev, const struct crypto_session_params *csp)
 	case CSP_MODE_AEAD:
 		switch (csp->csp_cipher_alg) {
 		case CRYPTO_AES_NIST_GCM_16:
-			if (csp->csp_ivlen != AES_GCM_IV_LEN)
-				return (EINVAL);
-			if (csp->csp_auth_mlen < 0 ||
-			    csp->csp_auth_mlen > AES_GMAC_HASH_LEN)
-				return (EINVAL);
 			if ((sc->hw_features & VERSION_CAP_AES) == 0)
 				return (EINVAL);
 			break;
@@ -641,8 +636,7 @@ static driver_t ccp_driver = {
 	sizeof(struct ccp_softc)
 };
 
-static devclass_t ccp_devclass;
-DRIVER_MODULE(ccp, pci, ccp_driver, ccp_devclass, NULL, NULL);
+DRIVER_MODULE(ccp, pci, ccp_driver, NULL, NULL);
 MODULE_VERSION(ccp, 1);
 MODULE_DEPEND(ccp, crypto, 1, 1, 1);
 MODULE_DEPEND(ccp, random_device, 1, 1, 1);
@@ -771,7 +765,7 @@ DB_SHOW_COMMAND(ccp, db_show_ccp)
 
 	unit = (unsigned)addr;
 
-	sc = devclass_get_softc(ccp_devclass, unit);
+	sc = devclass_get_softc(devclass_find("ccp"), unit);
 	if (sc == NULL) {
 		db_printf("No such device ccp%u\n", unit);
 		goto usage;

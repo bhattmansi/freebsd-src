@@ -72,10 +72,10 @@
 #include <sys/stdint.h>
 #include <sha2/sha2.h>
 
-/* ARGSUSED */
 void
 SHA512TransformBlocks(SHA2_CTX *ctx, const void *in, size_t num)
 {
+	(void) ctx, (void) in, (void) num;
 }
 
 
@@ -2059,11 +2059,11 @@ ENTRY_NP(SHA512TransformBlocks)
 .cfi_adjust_cfa_offset -8
 .cfi_restore	%rbx
 
-	ret
+	RET
 .cfi_endproc
 SET_SIZE(SHA512TransformBlocks)
 
-.data
+.section .rodata
 .align	64
 .type	K512,@object
 K512:

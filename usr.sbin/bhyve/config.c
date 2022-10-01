@@ -136,6 +136,17 @@ set_config_value_node(nvlist_t *parent, const char *name, const char *value)
 }
 
 void
+set_config_value_node_if_unset(nvlist_t *const parent, const char *const name,
+    const char *const value)
+{
+	if (get_config_value_node(parent, name) != NULL) {
+		return;
+	}
+
+	set_config_value_node(parent, name, value);
+}
+
+void
 set_config_value(const char *path, const char *value)
 {
 	const char *name;
@@ -165,6 +176,16 @@ set_config_value(const char *path, const char *value)
 		errx(4, "Attempting to add value %s to existing node %s",
 		    value, path);
 	set_config_value_node(nvl, name, value);
+}
+
+void
+set_config_value_if_unset(const char *const path, const char *const value)
+{
+	if (get_config_value(path) != NULL) {
+		return;
+	}
+
+	set_config_value(path, value);
 }
 
 static const char *
@@ -221,7 +242,7 @@ _expand_config_value(const char *value, int depth)
 				fputc('%', valfp);
 				vp++;
 				break;
-			}				
+			}
 			if (vp[1] != '(' || vp[2] == '\0')
 				cp = NULL;
 			else
@@ -284,7 +305,7 @@ _expand_config_value(const char *value, int depth)
 	return (valbuf);
 }
 
-const char *
+static const char *
 expand_config_value(const char *value)
 {
 	static char *valbuf;
@@ -325,7 +346,7 @@ get_config_value_node(const nvlist_t *parent, const char *name)
 	return (expand_config_value(nvlist_get_string(parent, name)));
 }
 
-bool
+static bool
 _bool_value(const char *name, const char *value)
 {
 

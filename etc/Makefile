@@ -11,6 +11,7 @@ NLS_ALIASES=	POSIX C \
 # No need as it is empty and just causes rebuilds since this file does so much.
 UPDATE_DEPENDFILE=	no
 
+SUBDIR+=termcap
 .if ${MK_SENDMAIL} != "no"
 SUBDIR+=sendmail
 .endif
@@ -107,10 +108,6 @@ MTREES=		mtree/BSD.root.dist		/		\
 MTREES+=	mtree/BSD.lib32.dist		/usr
 MTREES+=	mtree/BSD.lib32.dist		/usr/lib/debug/usr
 .endif
-.if ${MK_LIBSOFT} != "no"
-MTREES+=	mtree/BSD.libsoft.dist		/usr
-MTREES+=	mtree/BSD.libsoft.dist		/usr/lib/debug/usr
-.endif
 .if ${MK_TESTS} != "no"
 MTREES+=	mtree/BSD.tests.dist		${TESTSBASE}
 MTREES+=	mtree/BSD.tests.dist		/usr/lib/debug/${TESTSBASE}
@@ -149,7 +146,7 @@ distrib-dirs: ${MTREES:N/*} distrib-cleanup .PHONY
 .for _m _d in ${MTREES}
 	@m=${.CURDIR}/${_m}; \
 	d=${_d}; \
-	test "$$d" == "/" && d=""; \
+	test "$$d" = "/" && d=""; \
 	d=${DISTBASE}$$d; \
 	test -d ${DESTDIR}/$$d || mkdir -p ${DESTDIR}/$$d; \
 	${ECHO} "${MTREE_CMD:N-W} -C -f $$m -K all | " \

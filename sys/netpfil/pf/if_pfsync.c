@@ -76,7 +76,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/module.h>
 #include <sys/mutex.h>
 #include <sys/priv.h>
-#include <sys/protosw.h>
 #include <sys/smp.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
@@ -109,28 +108,22 @@ __FBSDID("$FreeBSD$");
 
 struct pfsync_bucket;
 
-struct pfsync_pkt {
-	struct ip *ip;
-	struct in_addr src;
-	u_int8_t flags;
-};
-
 static int	pfsync_upd_tcp(struct pf_kstate *, struct pfsync_state_peer *,
 		    struct pfsync_state_peer *);
-static int	pfsync_in_clr(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_ins(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_iack(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_upd(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_upd_c(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_ureq(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_del(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_del_c(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_bus(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_tdb(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_eof(struct pfsync_pkt *, struct mbuf *, int, int);
-static int	pfsync_in_error(struct pfsync_pkt *, struct mbuf *, int, int);
+static int	pfsync_in_clr(struct mbuf *, int, int, int);
+static int	pfsync_in_ins(struct mbuf *, int, int, int);
+static int	pfsync_in_iack(struct mbuf *, int, int, int);
+static int	pfsync_in_upd(struct mbuf *, int, int, int);
+static int	pfsync_in_upd_c(struct mbuf *, int, int, int);
+static int	pfsync_in_ureq(struct mbuf *, int, int, int);
+static int	pfsync_in_del(struct mbuf *, int, int, int);
+static int	pfsync_in_del_c(struct mbuf *, int, int, int);
+static int	pfsync_in_bus(struct mbuf *, int, int, int);
+static int	pfsync_in_tdb(struct mbuf *, int, int, int);
+static int	pfsync_in_eof(struct mbuf *, int, int, int);
+static int	pfsync_in_error(struct mbuf *, int, int, int);
 
-static int (*pfsync_acts[])(struct pfsync_pkt *, struct mbuf *, int, int) = {
+static int (*pfsync_acts[])(struct mbuf *, int, int, int) = {
 	pfsync_in_clr,			/* PFSYNC_ACT_CLR */
 	pfsync_in_ins,			/* PFSYNC_ACT_INS */
 	pfsync_in_iack,			/* PFSYNC_ACT_INS_ACK */
@@ -278,7 +271,7 @@ SYSCTL_NODE(_net, OID_AUTO, pfsync, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
 SYSCTL_STRUCT(_net_pfsync, OID_AUTO, stats, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(pfsyncstats), pfsyncstats,
     "PFSYNC statistics (struct pfsyncstats, net/if_pfsync.h)");
-SYSCTL_INT(_net_pfsync, OID_AUTO, carp_demotion_factor, CTLFLAG_RW,
+SYSCTL_INT(_net_pfsync, OID_AUTO, carp_demotion_factor, CTLFLAG_VNET | CTLFLAG_RW,
     &VNET_NAME(pfsync_carp_adj), 0, "pfsync's CARP demotion factor adjustment");
 SYSCTL_ULONG(_net_pfsync, OID_AUTO, pfsync_buckets, CTLFLAG_RDTUN,
     &pfsync_buckets, 0, "Number of pfsync hash buckets");
@@ -316,6 +309,7 @@ static struct pfsync_bucket	*pfsync_get_bucket(struct pfsync_softc *,
 		    struct pf_kstate *);
 
 #define PFSYNC_MAX_BULKTRIES	12
+#define PFSYNC_DEFER_TIMEOUT	((20 * hz) / 1000)
 
 VNET_DEFINE(struct if_clone *, pfsync_cloner);
 #define	V_pfsync_cloner	VNET(pfsync_cloner)
@@ -454,7 +448,7 @@ pfsync_alloc_scrub_memory(struct pfsync_state_peer *s,
 }
 
 static int
-pfsync_state_import(struct pfsync_state *sp, u_int8_t flags)
+pfsync_state_import(struct pfsync_state *sp, int flags)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
 #ifndef	__NO_STRICT_ALIGNMENT
@@ -617,6 +611,7 @@ cleanup:
 
 cleanup_state:	/* pf_state_insert() frees the state keys. */
 	if (st) {
+		st->timeout = PFTM_UNLINKED; /* appease an assert */
 		pf_free_state(st);
 	}
 	return (error);
@@ -626,13 +621,12 @@ static int
 pfsync_input(struct mbuf **mp, int *offp __unused, int proto __unused)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
-	struct pfsync_pkt pkt;
 	struct mbuf *m = *mp;
 	struct ip *ip = mtod(m, struct ip *);
 	struct pfsync_header *ph;
 	struct pfsync_subheader subh;
 
-	int offset, len;
+	int offset, len, flags = 0;
 	int rv;
 	uint16_t count;
 
@@ -687,18 +681,13 @@ pfsync_input(struct mbuf **mp, int *offp __unused, int proto __unused)
 		goto done;
 	}
 
-	/* Cheaper to grab this now than having to mess with mbufs later */
-	pkt.ip = ip;
-	pkt.src = ip->ip_src;
-	pkt.flags = 0;
-
 	/*
 	 * Trusting pf_chksum during packet processing, as well as seeking
 	 * in interface name tree, require holding PF_RULES_RLOCK().
 	 */
 	PF_RULES_RLOCK();
 	if (!bcmp(&ph->pfcksum, &V_pf_status.pf_chksum, PF_MD5_DIGEST_LENGTH))
-		pkt.flags |= PFSYNC_SI_CKSUM;
+		flags = PFSYNC_SI_CKSUM;
 
 	offset += sizeof(*ph);
 	while (offset <= len - sizeof(subh)) {
@@ -713,7 +702,7 @@ pfsync_input(struct mbuf **mp, int *offp __unused, int proto __unused)
 
 		count = ntohs(subh.count);
 		V_pfsyncstats.pfsyncs_iacts[subh.action] += count;
-		rv = (*pfsync_acts[subh.action])(&pkt, m, offset, count);
+		rv = (*pfsync_acts[subh.action])(m, offset, count, flags);
 		if (rv == -1) {
 			PF_RULES_RUNLOCK();
 			return (IPPROTO_DONE);
@@ -729,7 +718,7 @@ done:
 }
 
 static int
-pfsync_in_clr(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_clr(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_clr *clr;
 	struct mbuf *mp;
@@ -759,7 +748,7 @@ relock:
 			LIST_FOREACH(s, &ih->states, entry) {
 				if (s->creatorid == creatorid) {
 					s->state_flags |= PFSTATE_NOSYNC;
-					pf_unlink_state(s, PF_ENTER_LOCKED);
+					pf_unlink_state(s);
 					goto relock;
 				}
 			}
@@ -771,7 +760,7 @@ relock:
 }
 
 static int
-pfsync_in_ins(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_ins(struct mbuf *m, int offset, int count, int flags)
 {
 	struct mbuf *mp;
 	struct pfsync_state *sa, *sp;
@@ -800,7 +789,7 @@ pfsync_in_ins(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 			continue;
 		}
 
-		if (pfsync_state_import(sp, pkt->flags) == ENOMEM)
+		if (pfsync_state_import(sp, flags) == ENOMEM)
 			/* Drop out, but process the rest of the actions. */
 			break;
 	}
@@ -809,7 +798,7 @@ pfsync_in_ins(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_iack(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_iack(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_ins_ack *ia, *iaa;
 	struct pf_kstate *st;
@@ -880,7 +869,7 @@ pfsync_upd_tcp(struct pf_kstate *st, struct pfsync_state_peer *src,
 }
 
 static int
-pfsync_in_upd(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_upd(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
 	struct pfsync_state *sa, *sp;
@@ -916,7 +905,7 @@ pfsync_in_upd(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 		st = pf_find_state_byid(sp->id, sp->creatorid);
 		if (st == NULL) {
 			/* insert the update */
-			if (pfsync_state_import(sp, pkt->flags))
+			if (pfsync_state_import(sp, flags))
 				V_pfsyncstats.pfsyncs_badstate++;
 			continue;
 		}
@@ -966,7 +955,7 @@ pfsync_in_upd(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_upd_c(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_upd_c(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
 	struct pfsync_upd_c *ua, *up;
@@ -1053,7 +1042,7 @@ pfsync_in_upd_c(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_ureq(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_ureq(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_upd_req *ur, *ura;
 	struct mbuf *mp;
@@ -1094,7 +1083,7 @@ pfsync_in_ureq(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_del(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_del(struct mbuf *m, int offset, int count, int flags)
 {
 	struct mbuf *mp;
 	struct pfsync_state *sa, *sp;
@@ -1118,14 +1107,14 @@ pfsync_in_del(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 			continue;
 		}
 		st->state_flags |= PFSTATE_NOSYNC;
-		pf_unlink_state(st, PF_ENTER_LOCKED);
+		pf_unlink_state(st);
 	}
 
 	return (len);
 }
 
 static int
-pfsync_in_del_c(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_del_c(struct mbuf *m, int offset, int count, int flags)
 {
 	struct mbuf *mp;
 	struct pfsync_del_c *sa, *sp;
@@ -1150,14 +1139,14 @@ pfsync_in_del_c(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 		}
 
 		st->state_flags |= PFSTATE_NOSYNC;
-		pf_unlink_state(st, PF_ENTER_LOCKED);
+		pf_unlink_state(st);
 	}
 
 	return (len);
 }
 
 static int
-pfsync_in_bus(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_bus(struct mbuf *m, int offset, int count, int flags)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
 	struct pfsync_bus *bus;
@@ -1219,7 +1208,7 @@ pfsync_in_bus(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_tdb(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_tdb(struct mbuf *m, int offset, int count, int flags)
 {
 	int len = count * sizeof(struct pfsync_tdb);
 
@@ -1284,7 +1273,7 @@ bad:
 #endif
 
 static int
-pfsync_in_eof(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_eof(struct mbuf *m, int offset, int count, int flags)
 {
 	/* check if we are at the right place in the packet */
 	if (offset != m->m_pkthdr.len)
@@ -1296,7 +1285,7 @@ pfsync_in_eof(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
 }
 
 static int
-pfsync_in_error(struct pfsync_pkt *pkt, struct mbuf *m, int offset, int count)
+pfsync_in_error(struct mbuf *m, int offset, int count, int flags)
 {
 	V_pfsyncstats.pfsyncs_badact++;
 
@@ -1398,7 +1387,7 @@ pfsyncioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 			    pfsyncr.pfsyncr_syncpeer.s_addr;
 
 		sc->sc_maxupdates = pfsyncr.pfsyncr_maxupdates;
-		if (pfsyncr.pfsyncr_defer) {
+		if (pfsyncr.pfsyncr_defer & PFSYNCF_DEFER) {
 			sc->sc_flags |= PFSYNCF_DEFER;
 			V_pfsync_defer_ptr = pfsync_defer;
 		} else {
@@ -1734,25 +1723,35 @@ pfsync_defer(struct pf_kstate *st, struct mbuf *m)
 {
 	struct pfsync_softc *sc = V_pfsyncif;
 	struct pfsync_deferral *pd;
-	struct pfsync_bucket *b = pfsync_get_bucket(sc, st);
+	struct pfsync_bucket *b;
 
 	if (m->m_flags & (M_BCAST|M_MCAST))
 		return (0);
 
+	if (sc == NULL)
+		return (0);
+
+	b = pfsync_get_bucket(sc, st);
+
 	PFSYNC_LOCK(sc);
 
-	if (sc == NULL || !(sc->sc_ifp->if_flags & IFF_DRV_RUNNING) ||
+	if (!(sc->sc_ifp->if_drv_flags & IFF_DRV_RUNNING) ||
 	    !(sc->sc_flags & PFSYNCF_DEFER)) {
 		PFSYNC_UNLOCK(sc);
 		return (0);
 	}
 
+	PFSYNC_BUCKET_LOCK(b);
+	PFSYNC_UNLOCK(sc);
+
 	if (b->b_deferred >= 128)
 		pfsync_undefer(TAILQ_FIRST(&b->b_deferrals), 0);
 
 	pd = malloc(sizeof(*pd), M_PFSYNC, M_NOWAIT);
-	if (pd == NULL)
+	if (pd == NULL) {
+		PFSYNC_BUCKET_UNLOCK(b);
 		return (0);
+	}
 	b->b_deferred++;
 
 	m->m_flags |= M_SKIP_FIREWALL;
@@ -1766,9 +1765,10 @@ pfsync_defer(struct pf_kstate *st, struct mbuf *m)
 
 	TAILQ_INSERT_TAIL(&b->b_deferrals, pd, pd_entry);
 	callout_init_mtx(&pd->pd_tmo, &b->b_mtx, CALLOUT_RETURNUNLOCKED);
-	callout_reset(&pd->pd_tmo, 10, pfsync_defer_tmo, pd);
+	callout_reset(&pd->pd_tmo, PFSYNC_DEFER_TIMEOUT, pfsync_defer_tmo, pd);
 
 	pfsync_push(b);
+	PFSYNC_BUCKET_UNLOCK(b);
 
 	return (1);
 }
@@ -1817,7 +1817,7 @@ pfsync_defer_tmo(void *arg)
 	pd->pd_st->state_flags &= ~PFSTATE_ACK;	/* XXX: locking! */
 	if (pd->pd_refs == 0)
 		free(pd, M_PFSYNC);
-	PFSYNC_UNLOCK(sc);
+	PFSYNC_BUCKET_UNLOCK(b);
 
 	ip_output(m, NULL, NULL, 0, NULL, NULL);
 
@@ -2138,7 +2138,7 @@ pfsync_bulk_update(void *arg)
 {
 	struct pfsync_softc *sc = arg;
 	struct pf_kstate *s;
-	int i, sent = 0;
+	int i;
 
 	PFSYNC_BLOCK_ASSERT(sc);
 	CURVNET_SET(sc->sc_ifp->if_vnet);
@@ -2179,7 +2179,6 @@ pfsync_bulk_update(void *arg)
 					    pfsync_bulk_update, sc);
 					goto full;
 				}
-				sent++;
 			}
 		}
 		PF_HASHROW_UNLOCK(ih);
@@ -2410,22 +2409,8 @@ pfsync_detach_ifnet(struct ifnet *ifp)
 	PFSYNC_UNLOCK(sc);
 }
 
-#ifdef INET
-extern  struct domain inetdomain;
-static struct protosw in_pfsync_protosw = {
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_PFSYNC,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		pfsync_input,
-	.pr_output =		rip_output,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-};
-#endif
-
 static void
-pfsync_pointers_init()
+pfsync_pointers_init(void)
 {
 
 	PF_RULES_WLOCK();
@@ -2439,7 +2424,7 @@ pfsync_pointers_init()
 }
 
 static void
-pfsync_pointers_uninit()
+pfsync_pointers_uninit(void)
 {
 
 	PF_RULES_WLOCK();
@@ -2474,7 +2459,7 @@ VNET_SYSINIT(vnet_pfsync_init, SI_SUB_PROTO_FIREWALL, SI_ORDER_ANY,
 static void
 vnet_pfsync_uninit(const void *unused __unused)
 {
-	int ret;
+	int ret __diagused;
 
 	pfsync_pointers_uninit();
 
@@ -2489,34 +2474,28 @@ VNET_SYSUNINIT(vnet_pfsync_uninit, SI_SUB_PROTO_FIREWALL, SI_ORDER_FOURTH,
     vnet_pfsync_uninit, NULL);
 
 static int
-pfsync_init()
+pfsync_init(void)
 {
 #ifdef INET
 	int error;
 
 	pfsync_detach_ifnet_ptr = pfsync_detach_ifnet;
 
-	error = pf_proto_register(PF_INET, &in_pfsync_protosw);
+	error = ipproto_register(IPPROTO_PFSYNC, pfsync_input, NULL);
 	if (error)
 		return (error);
-	error = ipproto_register(IPPROTO_PFSYNC);
-	if (error) {
-		pf_proto_unregister(PF_INET, IPPROTO_PFSYNC, SOCK_RAW);
-		return (error);
-	}
 #endif
 
 	return (0);
 }
 
 static void
-pfsync_uninit()
+pfsync_uninit(void)
 {
 	pfsync_detach_ifnet_ptr = NULL;
 
 #ifdef INET
 	ipproto_unregister(IPPROTO_PFSYNC);
-	pf_proto_unregister(PF_INET, IPPROTO_PFSYNC, SOCK_RAW);
 #endif
 }
 

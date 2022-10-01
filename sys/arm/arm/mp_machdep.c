@@ -115,7 +115,7 @@ cpu_mp_start(void)
 
 	/* Reserve memory for application processors */
 	for(i = 0; i < (mp_ncpus - 1); i++)
-		dpcpu[i] = (void *)kmem_malloc(DPCPU_SIZE, M_WAITOK | M_ZERO);
+		dpcpu[i] = kmem_malloc(DPCPU_SIZE, M_WAITOK | M_ZERO);
 
 	dcache_wbinv_poc_all();
 
@@ -182,6 +182,7 @@ init_secondary(int cpu)
 	pc->pc_curthread = pc->pc_idlethread;
 	pc->pc_curpcb = pc->pc_idlethread->td_pcb;
 	set_curthread(pc->pc_idlethread);
+	schedinit_ap();
 #ifdef VFP
 	vfp_init();
 #endif
@@ -216,7 +217,7 @@ init_secondary(int cpu)
 	CTR0(KTR_SMP, "go into scheduler");
 
 	/* Enter the scheduler */
-	sched_throw(NULL);
+	sched_ap_entry();
 
 	panic("scheduler returned us to %s", __func__);
 	/* NOTREACHED */

@@ -137,12 +137,12 @@ bcm_fb_setup_fbd(struct bcmsc_softc *sc)
 	if (sc->fbswap) {
 		switch (sc->info.fb_bpp) {
 		case 24:
-			vt_generate_cons_palette(sc->info.fb_cmap,
+			vt_config_cons_colors(&sc->info,
 			    COLOR_FORMAT_RGB, 0xff, 0, 0xff, 8, 0xff, 16);
 			sc->info.fb_cmsize = 16;
 			break;
 		case 32:
-			vt_generate_cons_palette(sc->info.fb_cmap,
+			vt_config_cons_colors(&sc->info,
 			    COLOR_FORMAT_RGB, 0xff, 16, 0xff, 8, 0xff, 0);
 			sc->info.fb_cmsize = 16;
 			break;
@@ -152,12 +152,12 @@ bcm_fb_setup_fbd(struct bcmsc_softc *sc)
 	fbd = device_add_child(sc->dev, "fbd", device_get_unit(sc->dev));
 	if (fbd == NULL) {
 		device_printf(sc->dev, "Failed to add fbd child\n");
-		pmap_unmapdev(sc->info.fb_vbase, sc->info.fb_size);
+		pmap_unmapdev((void *)sc->info.fb_vbase, sc->info.fb_size);
 		return (ENXIO);
 	} else if (device_probe_and_attach(fbd) != 0) {
 		device_printf(sc->dev, "Failed to attach fbd device\n");
 		device_delete_child(sc->dev, fbd);
-		pmap_unmapdev(sc->info.fb_vbase, sc->info.fb_size);
+		pmap_unmapdev((void *)sc->info.fb_vbase, sc->info.fb_size);
 		return (ENXIO);
 	}
 
@@ -275,13 +275,11 @@ static device_method_t bcm_fb_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t bcm_fb_devclass;
-
 static driver_t bcm_fb_driver = {
 	"fb",
 	bcm_fb_methods,
 	sizeof(struct bcmsc_softc),
 };
 
-DRIVER_MODULE(bcm2835fb, ofwbus, bcm_fb_driver, bcm_fb_devclass, 0, 0);
-DRIVER_MODULE(bcm2835fb, simplebus, bcm_fb_driver, bcm_fb_devclass, 0, 0);
+DRIVER_MODULE(bcm2835fb, ofwbus, bcm_fb_driver, 0, 0);
+DRIVER_MODULE(bcm2835fb, simplebus, bcm_fb_driver, 0, 0);

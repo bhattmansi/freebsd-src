@@ -34,7 +34,7 @@ _MACOS_SDK_DIR=${_XCODE_ROOT}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sd
 .endif
 HOST_INCLUDE_ROOT=${_MACOS_SDK_DIR}/usr/include
 .if !exists(${HOST_INCLUDE_ROOT}/stdio.h)
-.error "You must install the macOS SDK (try xcode-select --install)"
+.error You must install the macOS SDK (try xcode-select --install)
 .endif
 .else
 HOST_INCLUDE_ROOT=/usr/include
@@ -125,6 +125,9 @@ _host_arch=${MACHINE}
 .if ${_host_arch} == "x86_64"
 # bmake on Linux/mac often prints that instead of amd64
 _host_arch=amd64
+.elif ${_host_arch} == "aarch64"
+# Linux calls arm64, aarch64, across the board
+_host_arch=arm64
 .elif ${_host_arch:Mppc*}
 _host_arch=powerpc
 .endif
@@ -150,6 +153,15 @@ SYSINCS+=	${SRCTOP}/sys/sys/nlist_aout.h
 
 .if ${.MAKE.OS} != "FreeBSD"
 .PATH: ${.CURDIR}/cross-build
+
+# Needed by our sys/types.h wrapper
+SYSINCS+=	${SRCTOP}/sys/sys/bitcount.h
+
+# macOS's bitstring lacks FreeBSD-specific additions used by makefs's ZFS code
+# and Linux doesn't have it at all.
+INCS+=	${SRCTOP}/include/bitstring.h
+SYSINCS+=	${SRCTOP}/sys/sys/bitstring.h
+
 # dbopen() behaves differently on Linux and FreeBSD so we ensure that we
 # bootstrap the FreeBSD db code. The cross-build headers #define dbopen() to
 # __freebsd_dbopen() so that we don't ever use the host version
@@ -178,6 +190,8 @@ SRCS+=	rpmatch.c
 # On Linux, glibc does not provide strlcpy,strlcat or strmode.
 .PATH: ${LIBC_SRCTOP}/string
 SRCS+=	strlcpy.c strlcat.c strmode.c
+# On Linux, glibc provides ffs* but not fls*
+SRCS+=	fls.c flsl.c flsll.c
 # Compile the fgetln/fgetwln/closefrom fallback code from libbsd:
 SRCS+=	fgetln_fallback.c fgetwln_fallback.c closefrom.c
 CFLAGS.closefrom.c+=	-DSTDC_HEADERS -DHAVE_SYS_DIR_H -DHAVE_DIRENT_H \
@@ -237,7 +251,7 @@ DISKINCS+=	${SRCTOP}/sys/sys/disk/bsd.h
 
 # Needed to build config (since it uses libnv)
 SYSINCS+=	${SRCTOP}/sys/sys/nv.h ${SRCTOP}/sys/sys/cnv.h \
-		${SRCTOP}/sys/sys/dnv.h
+		${SRCTOP}/sys/sys/dnv.h ${SRCTOP}/sys/sys/nv_namespace.h
 
 # Needed when bootstrapping ldd (since it uses DF_1_PIE)
 SYSINCS+=	${SRCTOP}/sys/sys/elf32.h
@@ -260,6 +274,7 @@ SYSINCS+=	${SRCTOP}/sys/sys/fnv_hash.h
 # opensolaris compatibility
 INCS+=	${SRCTOP}/include/elf.h
 SYSINCS+=	${SRCTOP}/sys/sys/elf.h
+SYSINCS+=	${SRCTOP}/sys/sys/ctf.h
 
 # We want to run the build with only ${WORLDTMP} in $PATH to ensure we don't
 # accidentally run tools that are incompatible but happen to be in $PATH.
@@ -320,7 +335,7 @@ host-symlinks:
 	@source_path="${_tool:S/:/ /:[1]}"; \
 	target_path="${DESTDIR}/bin/${_tool:S/:/ /:[2]}"; \
 	if [ ! -e "$${source_path}" ] ; then \
-		echo "Host tool '${src_path}' is missing"; false; \
+		echo "Host tool '$${source_path}' is missing"; false; \
 	fi; \
 	rm -f "$${target_path}"; \
 	${_COPY_HOST_TOOL} "$${source_path}" "$${target_path}"
@@ -341,6 +356,7 @@ INSTALLDIR_LIST= \
 	usr/include/private/ucl \
 	usr/include/private/zstd \
 	usr/lib \
+	usr/libdata/pkgconfig \
 	usr/libexec
 
 installdirs:

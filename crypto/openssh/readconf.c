@@ -1,4 +1,4 @@
-/* $OpenBSD: readconf.c,v 1.361 2021/07/23 04:04:52 djm Exp $ */
+/* $OpenBSD: readconf.c,v 1.366 2022/02/08 08:59:12 dtucker Exp $ */
 /*
  * Author: Tatu Ylonen <ylo@cs.hut.fi>
  * Copyright (c) 1995 Tatu Ylonen <ylo@cs.hut.fi>, Espoo, Finland
@@ -13,7 +13,6 @@
  */
 
 #include "includes.h"
-__RCSID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -68,7 +67,6 @@ __RCSID("$FreeBSD$");
 #include "uidswap.h"
 #include "myproposal.h"
 #include "digest.h"
-#include "version.h"
 
 /* Format of the configuration file:
 
@@ -143,7 +141,6 @@ static int process_config_line_depth(Options *options, struct passwd *pw,
 
 typedef enum {
 	oBadOption,
-	oVersionAddendum,
 	oHost, oMatch, oInclude,
 	oForwardAgent, oForwardX11, oForwardX11Trusted, oForwardX11Timeout,
 	oGatewayPorts, oExitOnForwardFailure,
@@ -330,7 +327,7 @@ static struct {
 	{ "tcprcvbuf", oDeprecated },
 	{ "noneenabled", oUnsupported },
 	{ "noneswitch", oUnsupported },
-	{ "versionaddendum", oVersionAddendum },
+	{ "versionaddendum", oDeprecated },
 
 	{ NULL, oBadOption }
 };
@@ -901,6 +898,15 @@ static const struct multistate multistate_canonicalizehostname[] = {
 	{ "always",			SSH_CANONICALISE_ALWAYS },
 	{ NULL, -1 }
 };
+static const struct multistate multistate_pubkey_auth[] = {
+	{ "true",			SSH_PUBKEY_AUTH_ALL },
+	{ "false",			SSH_PUBKEY_AUTH_NO },
+	{ "yes",			SSH_PUBKEY_AUTH_ALL },
+	{ "no",				SSH_PUBKEY_AUTH_NO },
+	{ "unbound",			SSH_PUBKEY_AUTH_UNBOUND },
+	{ "host-bound",			SSH_PUBKEY_AUTH_HBOUND },
+	{ NULL, -1 }
+};
 static const struct multistate multistate_compression[] = {
 #ifdef WITH_ZLIB
 	{ "yes",			COMP_ZLIB },
@@ -945,7 +951,7 @@ process_config_line_depth(Options *options, struct passwd *pw, const char *host,
     const char *original_host, char *line, const char *filename,
     int linenum, int *activep, int flags, int *want_final_pass, int depth)
 {
-	char *str, **charptr, *endofnumber, *keyword, *arg, *arg2, *p, ch;
+	char *str, **charptr, *endofnumber, *keyword, *arg, *arg2, *p;
 	char **cpptr, ***cppptr, fwdarg[256];
 	u_int i, *uintptr, uvalue, max_entries = 0;
 	int r, oactive, negated, opcode, *intptr, value, value2, cmdline = 0;
@@ -1113,8 +1119,9 @@ parse_time:
 		goto parse_string;
 
 	case oPubkeyAuthentication:
+		multistate_ptr = multistate_pubkey_auth;
 		intptr = &options->pubkey_authentication;
-		goto parse_flag;
+		goto parse_multistate;
 
 	case oHostbasedAuthentication:
 		intptr = &options->hostbased_authentication;
@@ -1585,9 +1592,8 @@ parse_pubkey_algos:
 		}
 		while ((arg = argv_next(&ac, &av)) != NULL) {
 			arg2 = xstrdup(arg);
-			ch = '\0';
-			p = hpdelim2(&arg, &ch);
-			if (p == NULL || ch == '/') {
+			p = hpdelim(&arg);
+			if (p == NULL) {
 				fatal("%s line %d: missing host in %s",
 				    filename, linenum,
 				    lookup_opcode_name(opcode));
@@ -1975,22 +1981,6 @@ parse_pubkey_algos:
 		intptr = &options->fork_after_authentication;
 		goto parse_flag;
 
-	case oVersionAddendum:
-		if (str == NULL)
-			fatal("%.200s line %d: Missing argument.", filename,
-			    linenum);
-		len = strspn(str, WHITESPACE);
-		if (*activep && options->version_addendum == NULL) {
-			if (strcasecmp(str + len, "none") == 0)
-				options->version_addendum = xstrdup("");
-			else if (strchr(str + len, '\r') != NULL)
-				fatal("%.200s line %d: Invalid argument",
-				    filename, linenum);
-			else
-				options->version_addendum = xstrdup(str + len);
-		}
-		return 0;
-
 	case oIgnoreUnknown:
 		charptr = &options->ignored_unknown;
 		goto parse_string;
@@ -2038,11 +2028,23 @@ parse_pubkey_algos:
 
 	case oCanonicalizePermittedCNAMEs:
 		value = options->num_permitted_cnames != 0;
+		i = 0;
 		while ((arg = argv_next(&ac, &av)) != NULL) {
-			/* Either '*' for everything or 'list:list' */
-			if (strcmp(arg, "*") == 0)
+			/*
+			 * Either 'none' (only in first position), '*' for
+			 * everything or 'list:list'
+			 */
+			if (strcasecmp(arg, "none") == 0) {
+				if (i > 0 || ac > 0) {
+					error("%s line %d: keyword %s \"none\" "
+					    "argument must appear alone.",
+					    filename, linenum, keyword);
+					goto out;
+				}
+				arg2 = "";
+			} else if (strcmp(arg, "*") == 0) {
 				arg2 = arg;
-			else {
+			} else {
 				lowercase(arg);
 				if ((arg2 = strchr(arg, ':')) == NULL ||
 				    arg2[1] == '\0') {
@@ -2054,6 +2056,7 @@ parse_pubkey_algos:
 				*arg2 = '\0';
 				arg2++;
 			}
+			i++;
 			if (!*activep || value)
 				continue;
 			if (options->num_permitted_cnames >=
@@ -2308,6 +2311,20 @@ option_clear_or_none(const char *o)
 }
 
 /*
+ * Returns 1 if CanonicalizePermittedCNAMEs have been specified, 0 otherwise.
+ * Allowed to be called on non-final configuration.
+ */
+int
+config_has_permitted_cnames(Options *options)
+{
+	if (options->num_permitted_cnames == 1 &&
+	    strcasecmp(options->permitted_cnames[0].source_list, "none") == 0 &&
+	    strcmp(options->permitted_cnames[0].target_list, "") == 0)
+		return 0;
+	return options->num_permitted_cnames > 0;
+}
+
+/*
  * Initializes options to special values that indicate that they have not yet
  * been set.  Read_config_file will only set options with this value. Options
  * are processed in the following order: command line, user config file,
@@ -2318,7 +2335,6 @@ void
 initialize_options(Options * options)
 {
 	memset(options, 'X', sizeof(*options));
-	options->version_addendum = NULL;
 	options->forward_agent = -1;
 	options->forward_agent_sock_path = NULL;
 	options->forward_x11 = -1;
@@ -2488,7 +2504,7 @@ fill_default_options(Options * options)
 	if (options->fwd_opts.streamlocal_bind_unlink == -1)
 		options->fwd_opts.streamlocal_bind_unlink = 0;
 	if (options->pubkey_authentication == -1)
-		options->pubkey_authentication = 1;
+		options->pubkey_authentication = SSH_PUBKEY_AUTH_ALL;
 	if (options->gss_authentication == -1)
 		options->gss_authentication = 0;
 	if (options->gss_deleg_creds == -1)
@@ -2524,7 +2540,6 @@ fill_default_options(Options * options)
 	}
 	if (options->num_identity_files == 0) {
 		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_RSA, 0);
-		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_DSA, 0);
 #ifdef OPENSSL_HAS_ECC
 		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_ECDSA, 0);
 		add_identity_file(options, "~/",
@@ -2535,6 +2550,7 @@ fill_default_options(Options * options)
 		add_identity_file(options, "~/",
 		    _PATH_SSH_CLIENT_ID_ED25519_SK, 0);
 		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_XMSS, 0);
+		add_identity_file(options, "~/", _PATH_SSH_CLIENT_ID_DSA, 0);
 	}
 	if (options->escape_char == -1)
 		options->escape_char = '~';
@@ -2682,13 +2698,20 @@ fill_default_options(Options * options)
 		free(options->jump_host);
 		options->jump_host = NULL;
 	}
+	if (options->num_permitted_cnames == 1 &&
+	    !config_has_permitted_cnames(options)) {
+		/* clean up CanonicalizePermittedCNAMEs=none */
+		free(options->permitted_cnames[0].source_list);
+		free(options->permitted_cnames[0].target_list);
+		memset(options->permitted_cnames, '\0',
+		    sizeof(*options->permitted_cnames));
+		options->num_permitted_cnames = 0;
+	}
 	/* options->identity_agent distinguishes NULL from 'none' */
 	/* options->user will be set in the main program if appropriate */
 	/* options->hostname will be set in the main program if appropriate */
 	/* options->host_key_alias should not be set by default */
 	/* options->preferred_authentications will be set in ssh */
-	if (options->version_addendum == NULL)
-		options->version_addendum = xstrdup(SSH_VERSION_FREEBSD);
 
 	/* success */
 	ret = 0;
@@ -3137,6 +3160,8 @@ fmt_intarg(OpCodes code, int val)
 		return fmt_multistate_int(val, multistate_canonicalizehostname);
 	case oAddKeysToAgent:
 		return fmt_multistate_int(val, multistate_yesnoaskconfirm);
+	case oPubkeyAuthentication:
+		return fmt_multistate_int(val, multistate_pubkey_auth);
 	case oFingerprintHash:
 		return ssh_digest_alg_name(val);
 	default:
@@ -3399,14 +3424,14 @@ dump_client_config(Options *o, const char *host)
 	printf("\n");
 
 	/* oCanonicalizePermittedCNAMEs */
-	if ( o->num_permitted_cnames > 0) {
-		printf("canonicalizePermittedcnames");
-		for (i = 0; i < o->num_permitted_cnames; i++) {
-			printf(" %s:%s", o->permitted_cnames[i].source_list,
-			    o->permitted_cnames[i].target_list);
-		}
-		printf("\n");
+	printf("canonicalizePermittedcnames");
+	if (o->num_permitted_cnames == 0)
+		printf(" none");
+	for (i = 0; i < o->num_permitted_cnames; i++) {
+		printf(" %s:%s", o->permitted_cnames[i].source_list,
+		    o->permitted_cnames[i].target_list);
 	}
+	printf("\n");
 
 	/* oControlPersist */
 	if (o->control_persist == 0 || o->control_persist_timeout == 0)

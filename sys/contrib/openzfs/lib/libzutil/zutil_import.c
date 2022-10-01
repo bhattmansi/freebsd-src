@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -47,7 +47,9 @@
  * using our derived config, and record the results.
  */
 
+#ifdef HAVE_AIO_H
 #include <aio.h>
+#endif
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
@@ -749,7 +751,7 @@ get_configs(libpc_handle_t *hdl, pool_list_t *pl, boolean_t active_ok,
 		    nvlist_add_uint64(nvroot, ZPOOL_CONFIG_ID, 0ULL) != 0 ||
 		    nvlist_add_uint64(nvroot, ZPOOL_CONFIG_GUID, guid) != 0 ||
 		    nvlist_add_nvlist_array(nvroot, ZPOOL_CONFIG_CHILDREN,
-		    child, children) != 0) {
+		    (const nvlist_t **)child, children) != 0) {
 			nvlist_free(nvroot);
 			goto nomem;
 		}
@@ -982,6 +984,9 @@ zpool_read_label_slow(int fd, nvlist_t **config, int *num_labels)
 int
 zpool_read_label(int fd, nvlist_t **config, int *num_labels)
 {
+#ifndef HAVE_AIO_H
+	return (zpool_read_label_slow(fd, config, num_labels));
+#else
 	struct stat64 statbuf;
 	struct aiocb aiocbs[VDEV_LABELS];
 	struct aiocb *aiocbps[VDEV_LABELS];
@@ -1032,11 +1037,11 @@ zpool_read_label(int fd, nvlist_t **config, int *num_labels)
 					// This shouldn't be possible to
 					// encounter, die if we do.
 					ASSERT(B_FALSE);
-					fallthrough;
+					zfs_fallthrough;
 				case EOPNOTSUPP:
 				case ENOSYS:
 					do_slow = B_TRUE;
-					fallthrough;
+					zfs_fallthrough;
 				case 0:
 				default:
 					(void) aio_return(&aiocbs[l]);
@@ -1104,6 +1109,7 @@ zpool_read_label(int fd, nvlist_t **config, int *num_labels)
 	*config = expected_config;
 
 	return (0);
+#endif
 }
 
 /*
@@ -1393,6 +1399,7 @@ static nvlist_t *
 zpool_find_import_impl(libpc_handle_t *hdl, importargs_t *iarg,
     pthread_mutex_t *lock, avl_tree_t *cache)
 {
+	(void) lock;
 	nvlist_t *ret = NULL;
 	pool_list_t pools = { 0 };
 	pool_entry_t *pe, *penext;
@@ -1536,7 +1543,7 @@ discover_cached_paths(libpc_handle_t *hdl, nvlist_t *nv,
 	 */
 	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_PATH, &path) == 0) {
 		if ((dl = zfs_dirnamelen(path)) == -1)
-			path = ".";
+			path = (char *)".";
 		else
 			path[dl] = '\0';
 		return (zpool_find_import_scan_dir(hdl, lock, cache,
@@ -1687,6 +1694,8 @@ zpool_find_import_cached(libpc_handle_t *hdl, importargs_t *iarg)
 			 * caller.
 			 */
 			nvpair_t *pair = nvlist_next_nvpair(nv, NULL);
+			if (pair == NULL)
+				continue;
 			fnvlist_add_nvlist(pools, nvpair_name(pair),
 			    fnvpair_value_nvlist(pair));
 
@@ -1704,6 +1713,8 @@ zpool_find_import_cached(libpc_handle_t *hdl, importargs_t *iarg)
 			nvlist_free(pools);
 			return (NULL);
 		}
+
+		update_vdevs_config_dev_sysfs_path(src);
 
 		if ((dst = zutil_refresh_config(hdl, src)) == NULL) {
 			nvlist_free(raw);
@@ -1858,4 +1869,71 @@ zpool_find_config(void *hdl, const char *target, nvlist_t **configp,
 	free(targetdup);
 
 	return (0);
+}
+
+/*
+ * Internal function for iterating over the vdevs.
+ *
+ * For each vdev, func() will be called and will be passed 'zhp' (which is
+ * typically the zpool_handle_t cast as a void pointer), the vdev's nvlist, and
+ * a user-defined data pointer).
+ *
+ * The return values from all the func() calls will be OR'd together and
+ * returned.
+ */
+int
+for_each_vdev_cb(void *zhp, nvlist_t *nv, pool_vdev_iter_f func,
+    void *data)
+{
+	nvlist_t **child;
+	uint_t c, children;
+	int ret = 0;
+	int i;
+	char *type;
+
+	const char *list[] = {
+	    ZPOOL_CONFIG_SPARES,
+	    ZPOOL_CONFIG_L2CACHE,
+	    ZPOOL_CONFIG_CHILDREN
+	};
+
+	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_TYPE, &type) != 0)
+		return (ret);
+
+	/* Don't run our function on root or indirect vdevs */
+	if ((strcmp(type, VDEV_TYPE_ROOT) != 0) &&
+	    (strcmp(type, VDEV_TYPE_INDIRECT) != 0)) {
+		ret |= func(zhp, nv, data);
+	}
+
+	for (i = 0; i < ARRAY_SIZE(list); i++) {
+		if (nvlist_lookup_nvlist_array(nv, list[i], &child,
+		    &children) == 0) {
+			for (c = 0; c < children; c++) {
+				uint64_t ishole = 0;
+
+				(void) nvlist_lookup_uint64(child[c],
+				    ZPOOL_CONFIG_IS_HOLE, &ishole);
+
+				if (ishole)
+					continue;
+
+				ret |= for_each_vdev_cb(zhp, child[c],
+				    func, data);
+			}
+		}
+	}
+
+	return (ret);
+}
+
+/*
+ * Given an ZPOOL_CONFIG_VDEV_TREE nvpair, iterate over all the vdevs, calling
+ * func() for each one.  func() is passed the vdev's nvlist and an optional
+ * user-defined 'data' pointer.
+ */
+int
+for_each_vdev_in_nvlist(nvlist_t *nvroot, pool_vdev_iter_f func, void *data)
+{
+	return (for_each_vdev_cb(NULL, nvroot, func, data));
 }

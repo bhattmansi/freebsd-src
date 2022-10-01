@@ -59,8 +59,8 @@ __FBSDID("$FreeBSD$");
 #include <netinet/ip.h>
 #include <netinet/ip_var.h>
 #include <netinet/ip_fw.h>
-#include <netinet/tcp_var.h>
 #include <netinet/udp.h>
+#include <netinet/tcp.h>
 
 #include <netinet/ip6.h>	/* IN6_ARE_ADDR_EQUAL */
 #ifdef INET6
@@ -1851,7 +1851,7 @@ dyn_get_parent_state(const struct ipfw_flow_id *pkt, uint32_t zoneid,
 	/*
 	 * We must exit from critical section because the following code
 	 * can acquire bucket mutex.
-	 * We rely on the the 'count' field. The state will not expire
+	 * We rely on the 'count' field. The state will not expire
 	 * until it has some child states, i.e. 'count' field is not zero.
 	 * Return state pointer, it will be used by child states as parent.
 	 */

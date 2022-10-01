@@ -57,7 +57,6 @@
 #endif
 
 /* BEGIN CSTYLED */
-
 /*
  * Cache magazines are an optimization designed to minimize the cost of
  * allocating memory.  They do this by keeping a per-cpu cache of recently
@@ -72,7 +71,7 @@
  * will be limited to 2-256 objects per magazine (i.e per cpu).  Magazines
  * may never be entirely disabled in this implementation.
  */
-unsigned int spl_kmem_cache_magazine_size = 0;
+static unsigned int spl_kmem_cache_magazine_size = 0;
 module_param(spl_kmem_cache_magazine_size, uint, 0444);
 MODULE_PARM_DESC(spl_kmem_cache_magazine_size,
 	"Default magazine size (2-256), set automatically (0)");
@@ -84,15 +83,15 @@ MODULE_PARM_DESC(spl_kmem_cache_magazine_size,
  * setting this value to KMC_RECLAIM_ONCE limits how aggressively the cache
  * is reclaimed.  This may increase the likelihood of out of memory events.
  */
-unsigned int spl_kmem_cache_reclaim = 0 /* KMC_RECLAIM_ONCE */;
+static unsigned int spl_kmem_cache_reclaim = 0 /* KMC_RECLAIM_ONCE */;
 module_param(spl_kmem_cache_reclaim, uint, 0644);
 MODULE_PARM_DESC(spl_kmem_cache_reclaim, "Single reclaim pass (0x1)");
 
-unsigned int spl_kmem_cache_obj_per_slab = SPL_KMEM_CACHE_OBJ_PER_SLAB;
+static unsigned int spl_kmem_cache_obj_per_slab = SPL_KMEM_CACHE_OBJ_PER_SLAB;
 module_param(spl_kmem_cache_obj_per_slab, uint, 0644);
 MODULE_PARM_DESC(spl_kmem_cache_obj_per_slab, "Number of objects per slab");
 
-unsigned int spl_kmem_cache_max_size = SPL_KMEM_CACHE_MAX_SIZE;
+static unsigned int spl_kmem_cache_max_size = SPL_KMEM_CACHE_MAX_SIZE;
 module_param(spl_kmem_cache_max_size, uint, 0644);
 MODULE_PARM_DESC(spl_kmem_cache_max_size, "Maximum size of slab in MB");
 
@@ -103,7 +102,7 @@ MODULE_PARM_DESC(spl_kmem_cache_max_size, "Maximum size of slab in MB");
  * of 16K was determined to be optimal for architectures using 4K pages and
  * to also work well on architecutres using larger 64K page sizes.
  */
-unsigned int spl_kmem_cache_slab_limit = 16384;
+static unsigned int spl_kmem_cache_slab_limit = 16384;
 module_param(spl_kmem_cache_slab_limit, uint, 0644);
 MODULE_PARM_DESC(spl_kmem_cache_slab_limit,
 	"Objects less than N bytes use the Linux slab");
@@ -112,7 +111,7 @@ MODULE_PARM_DESC(spl_kmem_cache_slab_limit,
  * The number of threads available to allocate new slabs for caches.  This
  * should not need to be tuned but it is available for performance analysis.
  */
-unsigned int spl_kmem_cache_kmem_threads = 4;
+static unsigned int spl_kmem_cache_kmem_threads = 4;
 module_param(spl_kmem_cache_kmem_threads, uint, 0444);
 MODULE_PARM_DESC(spl_kmem_cache_kmem_threads,
 	"Number of spl_kmem_cache threads");
@@ -680,7 +679,7 @@ spl_magazine_destroy(spl_kmem_cache_t *skc)
  *	KMC_NODEBUG	Disable debugging (unsupported)
  */
 spl_kmem_cache_t *
-spl_kmem_cache_create(char *name, size_t size, size_t align,
+spl_kmem_cache_create(const char *name, size_t size, size_t align,
     spl_kmem_ctor_t ctor, spl_kmem_dtor_t dtor, void *reclaim,
     void *priv, void *vmp, int flags)
 {
@@ -1421,7 +1420,7 @@ EXPORT_SYMBOL(spl_kmem_cache_reap_now);
  * it should do no harm.
  */
 int
-spl_kmem_cache_reap_active()
+spl_kmem_cache_reap_active(void)
 {
 	return (0);
 }
@@ -1452,6 +1451,9 @@ spl_kmem_cache_init(void)
 	    spl_kmem_cache_kmem_threads, maxclsyspri,
 	    spl_kmem_cache_kmem_threads * 8, INT_MAX,
 	    TASKQ_PREPOPULATE | TASKQ_DYNAMIC);
+
+	if (spl_kmem_cache_taskq == NULL)
+		return (-ENOMEM);
 
 	return (0);
 }

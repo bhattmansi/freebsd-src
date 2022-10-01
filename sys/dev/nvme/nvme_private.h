@@ -114,8 +114,6 @@ struct nvme_completion_poll_status {
 	int			done;
 };
 
-extern devclass_t nvme_devclass;
-
 #define NVME_REQUEST_VADDR	1
 #define NVME_REQUEST_NULL	2 /* For requests with no payload. */
 #define NVME_REQUEST_UIO	3
@@ -240,6 +238,8 @@ struct nvme_controller {
 	uint32_t		quirks;
 #define	QUIRK_DELAY_B4_CHK_RDY	1		/* Can't touch MMIO on disable */
 #define	QUIRK_DISABLE_TIMEOUT	2		/* Disable broken completion timeout feature */
+#define	QUIRK_INTEL_ALIGNMENT	4		/* Pre NVMe 1.3 performance alignment */
+#define QUIRK_AHCI		8		/* Attached via AHCI redirect */
 
 	bus_space_tag_t		bus_tag;
 	bus_space_handle_t	bus_handle;
@@ -277,8 +277,13 @@ struct nvme_controller {
 	/** maximum i/o size in bytes */
 	uint32_t		max_xfer_size;
 
-	/** minimum page size supported by this controller in bytes */
-	uint32_t		min_page_size;
+	/** LO and HI capacity mask */
+	uint32_t		cap_lo;
+	uint32_t		cap_hi;
+
+	/** Page size and log2(page_size) - 12 that we're currently using */
+	uint32_t		page_size;
+	uint32_t		mps;
 
 	/** interrupt coalescing time period (in microseconds) */
 	uint32_t		int_coal_time;

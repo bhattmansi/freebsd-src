@@ -20,6 +20,10 @@
 /* Define to 1 to enable crash memory dumps, and to 0 otherwise. */
 #define LLVM_ENABLE_CRASH_DUMPS 0
 
+/* Define to 1 to prefer forward slashes on Windows, and to 0 prefer
+   backslashes. */
+#define LLVM_WINDOWS_PREFER_FORWARD_SLASH 0
+
 /* Define to 1 if you have the `backtrace' function. */
 #define HAVE_BACKTRACE TRUE
 
@@ -70,6 +74,9 @@
 /* Define to 1 if we can deregister EH frames on this platform. */
 #define HAVE_DEREGISTER_FRAME 1
 #endif // !arm || USING_SJLJ_EXCEPTIONS || ARM_DWARF_EH_
+
+/* Define if __unw_add_dynamic_fde() is available on this platform. */
+/* #undef HAVE_UNW_ADD_DYNAMIC_FDE */
 
 /* Define to 1 if you have the <errno.h> header file. */
 #define HAVE_ERRNO_H 1
@@ -155,6 +162,9 @@
 #define HAVE_MALLINFO 1
 #endif
 
+/* Define to 1 if you have the `mallinfo2' function. */
+/* #undef HAVE_MALLINFO2 */
+
 /* Define to 1 if you have the <malloc/malloc.h> header file. */
 #if __has_include(<malloc/malloc.h>)
 #define HAVE_MALLOC_MALLOC_H 1
@@ -163,11 +173,6 @@
 /* Define to 1 if you have the `malloc_zone_statistics' function. */
 #if defined(__APPLE__)
 #define HAVE_MALLOC_ZONE_STATISTICS 1
-#endif
-
-/* Define to 1 if you have the `posix_fallocate' function. */
-#if !defined(__APPLE__)
-#define HAVE_POSIX_FALLOCATE 1
 #endif
 
 /* Define to 1 if you have the `posix_spawn' function. */
@@ -252,11 +257,6 @@
 #define LLVM_ENABLE_TERMINFO 1
 #endif
 
-/* Define if the xar_open() function is supported this platform. */
-#if defined(__APPLE__)
-#define HAVE_LIBXAR
-#endif
-
 /* Define to 1 if you have the <termios.h> header file. */
 #define HAVE_TERMIOS_H 1
 
@@ -273,9 +273,7 @@
 /* #undef HAVE__CHSIZE_S */
 
 /* Define to 1 if you have the `_Unwind_Backtrace' function. */
-#if !defined(__FreeBSD__)
 #define HAVE__UNWIND_BACKTRACE 1
-#endif
 
 /* Have host's __alloca */
 /* #undef HAVE___ALLOCA */
@@ -335,9 +333,6 @@
 /* Doesn't use `cmakedefine` because it is allowed to be empty. */
 /* #undef LLVM_DEFAULT_TARGET_TRIPLE */
 
-/* Define if zlib compression is available */
-#define LLVM_ENABLE_ZLIB 1
-
 /* Define if overriding target triple is enabled */
 /* #undef LLVM_TARGET_TRIPLE_ENV */
 
@@ -348,13 +343,20 @@
 #define LLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO 1
 
 /* Define if libxml2 is supported on this platform. */
-/* #undef LLVM_LIBXML2_ENABLED */
+/* #undef LLVM_ENABLE_LIBXML2 */
 
 /* Define to the extension used for shared libraries, say, ".so". */
 #if defined(__APPLE__)
 #define LTDL_SHLIB_EXT ".dylib"
 #else
 #define LTDL_SHLIB_EXT ".so"
+#endif
+
+/* Define to the extension used for plugin libraries, say, ".so". */
+#if defined(__APPLE__)
+#define LLVM_PLUGIN_EXT ".dylib"
+#else
+#define LLVM_PLUGIN_EXT ".so"
 #endif
 
 /* Define to the address where bug reports for this package should be sent. */
@@ -364,10 +366,10 @@
 #define PACKAGE_NAME "LLVM"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "LLVM 12.0.1"
+#define PACKAGE_STRING "LLVM 14.0.5"
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "12.0.1"
+#define PACKAGE_VERSION "14.0.5"
 
 /* Define to the vendor of this package. */
 /* #undef PACKAGE_VENDOR */
@@ -396,5 +398,7 @@
 #else
 #define LLVM_SUPPORT_XCODE_SIGNPOSTS 0
 #endif
+
+/* #undef HAVE_PROC_PID_RUSAGE */
 
 #endif

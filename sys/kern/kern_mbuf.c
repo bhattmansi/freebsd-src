@@ -39,14 +39,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/systm.h>
 #include <sys/mbuf.h>
-#include <sys/domain.h>
 #include <sys/eventhandler.h>
 #include <sys/kernel.h>
 #include <sys/ktls.h>
 #include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
-#include <sys/protosw.h>
 #include <sys/refcount.h>
 #include <sys/sf_buf.h>
 #include <sys/smp.h>
@@ -64,6 +62,9 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 #include <vm/uma.h>
 #include <vm/uma_dbg.h>
+
+_Static_assert(MJUMPAGESIZE > MCLBYTES,
+    "Cluster must be smaller than a jumbo page");
 
 /*
  * In FreeBSD, Mbufs and Mbuf Clusters are allocated from UMA
@@ -116,9 +117,26 @@ int nmbjumbop;			/* limits number of page size jumbo clusters */
 int nmbjumbo9;			/* limits number of 9k jumbo clusters */
 int nmbjumbo16;			/* limits number of 16k jumbo clusters */
 
-bool mb_use_ext_pgs = true;	/* use M_EXTPG mbufs for sendfile & TLS */
-SYSCTL_BOOL(_kern_ipc, OID_AUTO, mb_use_ext_pgs, CTLFLAG_RWTUN,
+bool mb_use_ext_pgs = false;	/* use M_EXTPG mbufs for sendfile & TLS */
+
+static int
+sysctl_mb_use_ext_pgs(SYSCTL_HANDLER_ARGS)
+{
+	int error, extpg;
+
+	extpg = mb_use_ext_pgs;
+	error = sysctl_handle_int(oidp, &extpg, 0, req);
+	if (error == 0 && req->newptr != NULL) {
+		if (extpg != 0 && !PMAP_HAS_DMAP)
+			error = EOPNOTSUPP;
+		else
+			mb_use_ext_pgs = extpg != 0;
+	}
+	return (error);
+}
+SYSCTL_PROC(_kern_ipc, OID_AUTO, mb_use_ext_pgs, CTLTYPE_INT | CTLFLAG_RW,
     &mb_use_ext_pgs, 0,
+    sysctl_mb_use_ext_pgs, "IU",
     "Use unmapped mbufs for sendfile(2) and TLS offload");
 
 static quad_t maxmbufmem;	/* overall real memory limit for all mbufs */
@@ -137,6 +155,7 @@ static void
 tunable_mbinit(void *dummy)
 {
 	quad_t realmem;
+	int extpg;
 
 	/*
 	 * The default limit for all mbuf related memory is 1/2 of all
@@ -173,6 +192,16 @@ tunable_mbinit(void *dummy)
 	if (nmbufs < nmbclusters + nmbjumbop + nmbjumbo9 + nmbjumbo16)
 		nmbufs = lmax(maxmbufmem / MSIZE / 5,
 		    nmbclusters + nmbjumbop + nmbjumbo9 + nmbjumbo16);
+
+	/*
+	 * Unmapped mbufs can only safely be used on platforms with a direct
+	 * map.
+	 */
+	if (PMAP_HAS_DMAP) {
+		extpg = 1;
+		TUNABLE_INT_FETCH("kern.ipc.mb_use_ext_pgs", &extpg);
+		mb_use_ext_pgs = extpg != 0;
+	}
 }
 SYSINIT(tunable_mbinit, SI_SUB_KMEM, SI_ORDER_MIDDLE, tunable_mbinit, NULL);
 
@@ -195,7 +224,7 @@ sysctl_nmbclusters(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, nmbclusters,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &nmbclusters, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &nmbclusters, 0,
     sysctl_nmbclusters, "IU",
     "Maximum number of mbuf clusters allowed");
 
@@ -217,7 +246,7 @@ sysctl_nmbjumbop(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, nmbjumbop,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &nmbjumbop, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &nmbjumbop, 0,
     sysctl_nmbjumbop, "IU",
     "Maximum number of mbuf page size jumbo clusters allowed");
 
@@ -239,7 +268,7 @@ sysctl_nmbjumbo9(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, nmbjumbo9,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &nmbjumbo9, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &nmbjumbo9, 0,
     sysctl_nmbjumbo9, "IU",
     "Maximum number of mbuf 9k jumbo clusters allowed");
 
@@ -261,7 +290,7 @@ sysctl_nmbjumbo16(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, nmbjumbo16,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, &nmbjumbo16, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, &nmbjumbo16, 0,
     sysctl_nmbjumbo16, "IU",
     "Maximum number of mbuf 16k jumbo clusters allowed");
 
@@ -283,7 +312,7 @@ sysctl_nmbufs(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 SYSCTL_PROC(_kern_ipc, OID_AUTO, nmbufs,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
     &nmbufs, 0, sysctl_nmbufs, "IU",
     "Maximum number of mbufs allowed");
 
@@ -368,14 +397,6 @@ mbuf_init(void *dummy)
 	uma_zone_set_warning(zone_jumbo16, "kern.ipc.nmbjumbo16 limit reached");
 	uma_zone_set_maxaction(zone_jumbo16, mb_reclaim);
 
-	/*
-	 * Hook event handler for low-memory situation, used to
-	 * drain protocols and push data back to the caches (UMA
-	 * later pushes it back to VM).
-	 */
-	EVENTHANDLER_REGISTER(vm_lowmem, mb_reclaim, NULL,
-	    EVENTHANDLER_PRI_FIRST);
-
 	snd_tag_count = counter_u64_alloc(M_WAITOK);
 }
 SYSINIT(mbuf, SI_SUB_MBUF, SI_ORDER_FIRST, mbuf_init, NULL);
@@ -457,7 +478,7 @@ dn_pack_import(void *arg __unused, void **store, int count, int domain __unused,
 	int i;
 
 	for (i = 0; i < count; i++) {
-		m = m_get(MT_DATA, M_NOWAIT);
+		m = m_get(M_NOWAIT, MT_DATA);
 		if (m == NULL)
 			break;
 		clust = uma_zalloc(dn_zone_clust, M_NOWAIT);
@@ -600,7 +621,7 @@ debugnet_mbuf_reinit(int nmbuf, int nclust, int clsize)
 	    NULL, UMA_ZONE_NOBUCKET);
 
 	while (nmbuf-- > 0) {
-		m = m_get(MT_DATA, M_WAITOK);
+		m = m_get(M_WAITOK, MT_DATA);
 		uma_zfree(dn_zone_mbuf, m);
 	}
 	while (nclust-- > 0) {
@@ -652,7 +673,7 @@ static void
 mb_dtor_mbuf(void *mem, int size, void *arg)
 {
 	struct mbuf *m;
-	unsigned long flags;
+	unsigned long flags __diagused;
 
 	m = (struct mbuf *)mem;
 	flags = (unsigned long)arg;
@@ -800,26 +821,12 @@ mb_ctor_pack(void *mem, int size, void *arg, int how)
 /*
  * This is the protocol drain routine.  Called by UMA whenever any of the
  * mbuf zones is closed to its limit.
- *
- * No locks should be held when this is called.  The drain routines have to
- * presently acquire some locks which raises the possibility of lock order
- * reversal.
  */
 static void
 mb_reclaim(uma_zone_t zone __unused, int pending __unused)
 {
-	struct epoch_tracker et;
-	struct domain *dp;
-	struct protosw *pr;
 
-	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK | WARN_PANIC, NULL, __func__);
-
-	NET_EPOCH_ENTER(et);
-	for (dp = domains; dp != NULL; dp = dp->dom_next)
-		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-			if (pr->pr_drain != NULL)
-				(*pr->pr_drain)();
-	NET_EPOCH_EXIT(et);
+	EVENTHANDLER_INVOKE(mbuf_lowmem, VM_LOW_MBUFS);
 }
 
 /*
@@ -1400,7 +1407,7 @@ m_get3(int size, int how, short type, int flags)
 	else
 		zone = zone_jumbo16;
 
-	n = uma_zalloc_arg(zone_jumbop, m, how);
+	n = uma_zalloc_arg(zone, m, how);
 	if (n == NULL) {
 		m_free_raw(m);
 		return (NULL);
@@ -1607,6 +1614,54 @@ m_snd_tag_destroy(struct m_snd_tag *mst)
 	counter_u64_add(snd_tag_count, -1);
 }
 
+void
+m_rcvif_serialize(struct mbuf *m)
+{
+	u_short idx, gen;
+
+	M_ASSERTPKTHDR(m);
+	idx = m->m_pkthdr.rcvif->if_index;
+	gen = m->m_pkthdr.rcvif->if_idxgen;
+	m->m_pkthdr.rcvidx = idx;
+	m->m_pkthdr.rcvgen = gen;
+	if (__predict_false(m->m_pkthdr.leaf_rcvif != NULL)) {
+		idx = m->m_pkthdr.leaf_rcvif->if_index;
+		gen = m->m_pkthdr.leaf_rcvif->if_idxgen;
+	} else {
+		idx = -1;
+		gen = 0;
+	}
+	m->m_pkthdr.leaf_rcvidx = idx;
+	m->m_pkthdr.leaf_rcvgen = gen;
+}
+
+struct ifnet *
+m_rcvif_restore(struct mbuf *m)
+{
+	struct ifnet *ifp, *leaf_ifp;
+
+	M_ASSERTPKTHDR(m);
+	NET_EPOCH_ASSERT();
+
+	ifp = ifnet_byindexgen(m->m_pkthdr.rcvidx, m->m_pkthdr.rcvgen);
+	if (ifp == NULL || (ifp->if_flags & IFF_DYING))
+		return (NULL);
+
+	if (__predict_true(m->m_pkthdr.leaf_rcvidx == (u_short)-1)) {
+		leaf_ifp = NULL;
+	} else {
+		leaf_ifp = ifnet_byindexgen(m->m_pkthdr.leaf_rcvidx,
+		    m->m_pkthdr.leaf_rcvgen);
+		if (__predict_false(leaf_ifp != NULL && (leaf_ifp->if_flags & IFF_DYING)))
+			leaf_ifp = NULL;
+	}
+
+	m->m_pkthdr.leaf_rcvif = leaf_ifp;
+	m->m_pkthdr.rcvif = ifp;
+
+	return (ifp);
+}
+
 /*
  * Allocate an mbuf with anonymous external pages.
  */
@@ -1624,8 +1679,8 @@ mb_alloc_ext_plus_pages(int len, int how)
 	npgs = howmany(len, PAGE_SIZE);
 	for (i = 0; i < npgs; i++) {
 		do {
-			pg = vm_page_alloc(NULL, 0, VM_ALLOC_NORMAL |
-			    VM_ALLOC_NOOBJ | VM_ALLOC_NODUMP | VM_ALLOC_WIRED);
+			pg = vm_page_alloc_noobj(VM_ALLOC_NODUMP |
+			    VM_ALLOC_WIRED);
 			if (pg == NULL) {
 				if (how == M_NOWAIT) {
 					m->m_epg_npgs = i;

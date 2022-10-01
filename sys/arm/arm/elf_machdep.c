@@ -34,6 +34,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/exec.h>
 #include <sys/imgact.h>
 #include <sys/linker.h>
+#include <sys/reg.h>
 #include <sys/sysent.h>
 #include <sys/imgact_elf.h>
 #include <sys/proc.h>
@@ -65,7 +66,6 @@ u_long elf_hwcap2;
 struct sysentvec elf32_freebsd_sysvec = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= sysent,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= __elfN(freebsd_fixup),
 	.sv_sendsig	= sendsig,
 	.sv_sigcode	= sigcode,
@@ -81,6 +81,7 @@ struct sysentvec elf32_freebsd_sysvec = {
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_ALL,
 	.sv_copyout_auxargs = __elfN(freebsd_copyout_auxargs),
 	.sv_copyout_strings = exec_copyout_strings,
@@ -102,6 +103,8 @@ struct sysentvec elf32_freebsd_sysvec = {
 	.sv_hwcap2	= &elf_hwcap2,
 	.sv_onexec_old	= exec_onexec_old,
 	.sv_onexit	= exit_onexit,
+	.sv_regset_begin = SET_BEGIN(__elfN(regset)),
+	.sv_regset_end  = SET_LIMIT(__elfN(regset)),
 };
 INIT_SYSENTVEC(elf32_sysvec, &elf32_freebsd_sysvec);
 
@@ -141,19 +144,9 @@ elf32_arm_abi_supported(struct image_params *imgp, int32_t *osrel __unused,
 }
 
 void
-elf32_dump_thread(struct thread *td, void *dst, size_t *off)
+elf32_dump_thread(struct thread *td __unused, void *dst __unused,
+    size_t *off __unused)
 {
-#ifdef VFP
-	mcontext_vfp_t vfp;
-
-	if (dst != NULL) {
-		get_vfpcontext(td, &vfp);
-		*off = elf32_populate_note(NT_ARM_VFP, &vfp, dst, sizeof(vfp),
-		    NULL);
-	} else
-		*off = elf32_populate_note(NT_ARM_VFP, NULL, NULL, sizeof(vfp),
-		    NULL);
-#endif
 }
 
 bool

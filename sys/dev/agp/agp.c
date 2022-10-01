@@ -153,9 +153,8 @@ agp_alloc_gatt(device_t dev)
 		return 0;
 
 	gatt->ag_entries = entries;
-	gatt->ag_virtual = (void *)kmem_alloc_contig(entries *
-	    sizeof(u_int32_t), M_NOWAIT | M_ZERO, 0, ~0, PAGE_SIZE, 0,
-	    VM_MEMATTR_WRITE_COMBINING);
+	gatt->ag_virtual = kmem_alloc_contig(entries * sizeof(uint32_t),
+	    M_NOWAIT | M_ZERO, 0, ~0, PAGE_SIZE, 0, VM_MEMATTR_WRITE_COMBINING);
 	if (!gatt->ag_virtual) {
 		if (bootverbose)
 			device_printf(dev, "contiguous allocation failed\n");
@@ -170,8 +169,7 @@ agp_alloc_gatt(device_t dev)
 void
 agp_free_gatt(struct agp_gatt *gatt)
 {
-	kmem_free((vm_offset_t)gatt->ag_virtual, gatt->ag_entries *
-	    sizeof(u_int32_t));
+	kmem_free(gatt->ag_virtual, gatt->ag_entries * sizeof(uint32_t));
 	free(gatt, M_AGP);
 }
 
@@ -205,8 +203,9 @@ agp_set_aperture_resource(device_t dev, int rid)
 int
 agp_generic_attach(device_t dev)
 {
+	struct make_dev_args mdargs;
 	struct agp_softc *sc = device_get_softc(dev);
-	int i;
+	int error, i, unit;
 	u_int memsize;
 
 	/*
@@ -250,11 +249,31 @@ agp_generic_attach(device_t dev)
 	TAILQ_INIT(&sc->as_memory);
 	sc->as_nextid = 1;
 
-	sc->as_devnode = make_dev(&agp_cdevsw,
-	    0, UID_ROOT, GID_WHEEL, 0600, "agpgart");
-	sc->as_devnode->si_drv1 = dev;
+	sc->as_devalias = NULL;
 
-	return 0;
+	make_dev_args_init(&mdargs);
+	mdargs.mda_devsw = &agp_cdevsw;
+	mdargs.mda_uid = UID_ROOT;
+	mdargs.mda_gid = GID_WHEEL;
+	mdargs.mda_mode = 0600;
+	mdargs.mda_si_drv1 = sc;
+	mdargs.mda_si_drv2 = NULL;
+
+	unit = device_get_unit(dev);
+	error = make_dev_s(&mdargs, &sc->as_devnode, "agpgart%d", unit);
+	if (error == 0) {
+		/*
+		 * Create an alias for the first device that shows up.
+		 */
+		if (unit == 0) {
+			(void)make_dev_alias_p(MAKEDEV_CHECKNAME,
+			    &sc->as_devalias, sc->as_devnode, "agpgart");
+		}
+	} else {
+		agp_free_res(dev);
+	}
+
+	return error;
 }
 
 void
@@ -263,6 +282,8 @@ agp_free_cdev(device_t dev)
 	struct agp_softc *sc = device_get_softc(dev);
 
 	destroy_dev(sc->as_devnode);
+	if (sc->as_devalias != NULL)
+		destroy_dev(sc->as_devalias);
 }
 
 void
@@ -491,7 +512,7 @@ agp_generic_alloc_memory(device_t dev, int type, vm_size_t size)
 	mem->am_id = sc->as_nextid++;
 	mem->am_size = size;
 	mem->am_type = 0;
-	mem->am_obj = vm_object_allocate(OBJT_DEFAULT, atop(round_page(size)));
+	mem->am_obj = vm_object_allocate(OBJT_SWAP, atop(round_page(size)));
 	mem->am_physical = 0;
 	mem->am_offset = 0;
 	mem->am_is_bound = 0;
@@ -884,7 +905,7 @@ agp_mmap(struct cdev *kdev, vm_ooffset_t offset, vm_paddr_t *paddr,
 /* Implementation of the kernel api */
 
 device_t
-agp_find_device()
+agp_find_device(void)
 {
 	device_t *children, child;
 	int i, count;

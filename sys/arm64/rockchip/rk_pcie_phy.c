@@ -252,7 +252,6 @@ rk_pcie_phy_enable(struct phynode *phynode, bool enable)
 }
 
 /* Phy class and methods. */
-static int rk_pcie_phy_enable(struct phynode *phynode, bool enable);
 static phynode_method_t rk_pcie_phy_phynode_methods[] = {
 	PHYNODEMETHOD(phynode_enable,		 rk_pcie_phy_enable),
 
@@ -365,7 +364,5 @@ static device_method_t rk_pcie_phy_methods[] = {
 DEFINE_CLASS_0(rk_pcie_phy, rk_pcie_phy_driver, rk_pcie_phy_methods,
     sizeof(struct rk_pcie_phy_softc));
 
-static devclass_t rk_pcie_phy_devclass;
-EARLY_DRIVER_MODULE(rk_pcie_phy, simplebus, rk_pcie_phy_driver,
-    rk_pcie_phy_devclass, NULL, NULL,
+EARLY_DRIVER_MODULE(rk_pcie_phy, simplebus, rk_pcie_phy_driver, NULL, NULL,
     BUS_PASS_SUPPORTDEV + BUS_PASS_ORDER_MIDDLE);

@@ -35,8 +35,8 @@ arm/arm/gic.c			optional	gic
 arm/arm/gic_fdt.c		optional	gic fdt
 arm/arm/gic_if.m		optional	gic
 arm/arm/identcpu-v6.c		standard
-arm/arm/in_cksum.c		optional	inet | inet6
 arm/arm/in_cksum_arm.S		optional	inet | inet6
+arm/arm/in_cksum_machdep.c	optional	inet | inet6
 kern/subr_intr.c		standard
 arm/arm/locore.S		standard	no-obj
 arm/arm/hypervisor-stub.S	standard
@@ -100,6 +100,10 @@ dev/psci/smccc_arm.S		optional	psci
 dev/syscons/scgfbrndr.c		optional	sc
 dev/uart/uart_cpu_fdt.c		optional	uart fdt
 
+dev/usb/controller/dwc3.c		optional	fdt dwc3
+dev/usb/controller/generic_xhci.c	optional	xhci
+dev/usb/controller/generic_xhci_fdt.c	optional	xhci fdt
+
 kern/msi_if.m			optional	intrng
 kern/pic_if.m			optional	intrng
 kern/subr_busdma_bufalloc.c	standard
@@ -126,7 +130,9 @@ libkern/flsll.c			optional	!armv7 !armv6
 libkern/lshrdi3.c		standard
 libkern/moddi3.c		standard
 libkern/qdivrem.c		standard
+libkern/strcmp.c		standard
 libkern/strlen.c		standard
+libkern/strncmp.c		standard
 libkern/ucmpdi2.c		standard
 libkern/udivdi3.c		standard
 libkern/umoddi3.c		standard

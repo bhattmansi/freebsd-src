@@ -35,8 +35,11 @@
 #ifndef _NETINET_IP_VAR_H_
 #define	_NETINET_IP_VAR_H_
 
-#include <sys/queue.h>
 #include <sys/epoch.h>
+#include <sys/queue.h>
+#include <sys/types.h>
+
+#include <netinet/in.h>
 
 /*
  * Overlay for ip header used by other protocols (tcp, udp).
@@ -53,18 +56,18 @@ struct ipovly {
 /*
  * Ip reassembly queue structure.  Each fragment
  * being reassembled is attached to one of these structures.
- * They are timed out after ipq_ttl drops to 0, and may also
- * be reclaimed if memory becomes tight.
+ * They are timed out after net.inet.ip.fragttl seconds, and may also be
+ * reclaimed if memory becomes tight.
  */
 struct ipq {
 	TAILQ_ENTRY(ipq) ipq_list;	/* to other reass headers */
-	u_char	ipq_ttl;		/* time for reass q to live */
+	time_t	ipq_expire;		/* time_uptime when ipq expires */
+	u_char	ipq_nfrags;		/* # frags in this packet */
 	u_char	ipq_p;			/* protocol of this fragment */
 	u_short	ipq_id;			/* sequence id for reassembly */
 	int	ipq_maxoff;		/* total length of packet */
 	struct mbuf *ipq_frags;		/* to ip headers of fragments */
 	struct	in_addr ipq_src,ipq_dst;
-	u_char	ipq_nfrags;		/* # frags in this packet */
 	struct label *ipq_label;	/* MAC label */
 };
 #endif /* _KERNEL */
@@ -186,14 +189,12 @@ VNET_DECLARE(int, ipsendredirects);
 #ifdef IPSTEALTH
 VNET_DECLARE(int, ipstealth);			/* stealth forwarding */
 #endif
-extern u_char	ip_protox[];
 VNET_DECLARE(struct socket *, ip_rsvpd);	/* reservation protocol daemon*/
 VNET_DECLARE(struct socket *, ip_mrouter);	/* multicast routing daemon */
 extern int	(*legal_vif_num)(int);
 extern u_long	(*ip_mcast_src)(int);
 VNET_DECLARE(int, rsvp_on);
 VNET_DECLARE(int, drop_redirect);
-extern struct	pr_usrreqs rip_usrreqs;
 
 #define	V_ip_id			VNET(ip_id)
 #define	V_ip_defttl		VNET(ip_defttl)
@@ -212,32 +213,26 @@ int	inp_getmoptions(struct inpcb *, struct sockopt *);
 int	inp_setmoptions(struct inpcb *, struct sockopt *);
 
 int	ip_ctloutput(struct socket *, struct sockopt *sopt);
-void	ip_drain(void);
 int	ip_fragment(struct ip *ip, struct mbuf **m_frag, int mtu,
 	    u_long if_hwassist_flags);
 void	ip_forward(struct mbuf *m, int srcrt);
-void	ip_init(void);
 extern int
 	(*ip_mforward)(struct ip *, struct ifnet *, struct mbuf *,
 	    struct ip_moptions *);
 int	ip_output(struct mbuf *,
 	    struct mbuf *, struct route *, int, struct ip_moptions *,
 	    struct inpcb *);
-int	ipproto_register(short);
-int	ipproto_unregister(short);
 struct mbuf *
 	ip_reass(struct mbuf *);
 void	ip_savecontrol(struct inpcb *, struct mbuf **, struct ip *,
 	    struct mbuf *);
-void	ip_slowtimo(void);
 void	ip_fillid(struct ip *);
 int	rip_ctloutput(struct socket *, struct sockopt *);
 void	rip_ctlinput(int, struct sockaddr *, void *);
-void	rip_init(void);
 int	rip_input(struct mbuf **, int *, int);
-int	rip_output(struct mbuf *, struct socket *, ...);
 int	ipip_input(struct mbuf **, int *, int);
 int	rsvp_input(struct mbuf **, int *, int);
+
 int	ip_rsvp_init(struct socket *);
 int	ip_rsvp_done(void);
 extern int	(*ip_rsvp_vif)(struct socket *, struct sockopt *);

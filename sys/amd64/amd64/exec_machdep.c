@@ -77,6 +77,7 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_param.h>
 #include <vm/vm_extern.h>
 #include <vm/pmap.h>
+#include <vm/vm_map.h>
 
 #ifdef DDB
 #ifndef KDB
@@ -95,10 +96,9 @@ __FBSDID("$FreeBSD$");
 #include <machine/specialreg.h>
 #include <machine/trap.h>
 
-static void get_fpcontext(struct thread *td, mcontext_t *mcp,
-    char **xfpusave, size_t *xfpusave_len);
-static int set_fpcontext(struct thread *td, mcontext_t *mcp,
-    char *xfpustate, size_t xfpustate_len);
+_Static_assert(sizeof(mcontext_t) == 800, "mcontext_t size incorrect");
+_Static_assert(sizeof(ucontext_t) == 880, "ucontext_t size incorrect");
+_Static_assert(sizeof(siginfo_t) == 80, "siginfo_t size incorrect");
 
 /*
  * Send an interrupt to process.
@@ -204,7 +204,7 @@ sendsig(sig_t catcher, ksiginfo_t *ksi, sigset_t *mask)
 
 	fpstate_drop(td);
 	regs->tf_rsp = (long)sfp;
-	regs->tf_rip = p->p_sysent->sv_sigcode_base;
+	regs->tf_rip = PROC_SIGCODE(p);
 	regs->tf_rflags &= ~(PSL_T | PSL_D);
 	regs->tf_cs = _ucodesel;
 	regs->tf_ds = _udatasel;
@@ -631,7 +631,7 @@ get_mcontext(struct thread *td, mcontext_t *mcp, int flags)
 	mcp->mc_gs = tp->tf_gs;
 	mcp->mc_flags = tp->tf_flags;
 	mcp->mc_len = sizeof(*mcp);
-	get_fpcontext(td, mcp, NULL, 0);
+	get_fpcontext(td, mcp, NULL, NULL);
 	update_pcb_bases(pcb);
 	mcp->mc_fsbase = pcb->pcb_fsbase;
 	mcp->mc_gsbase = pcb->pcb_gsbase;
@@ -714,7 +714,7 @@ set_mcontext(struct thread *td, mcontext_t *mcp)
 	return (0);
 }
 
-static void
+void
 get_fpcontext(struct thread *td, mcontext_t *mcp, char **xfpusave,
     size_t *xfpusave_len)
 {
@@ -735,7 +735,7 @@ get_fpcontext(struct thread *td, mcontext_t *mcp, char **xfpusave,
 	}
 }
 
-static int
+int
 set_fpcontext(struct thread *td, mcontext_t *mcp, char *xfpustate,
     size_t xfpustate_len)
 {

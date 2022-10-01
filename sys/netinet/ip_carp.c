@@ -46,7 +46,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/module.h>
 #include <sys/priv.h>
 #include <sys/proc.h>
-#include <sys/protosw.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/sysctl.h>
@@ -147,10 +146,6 @@ struct carp_if {
 	uint32_t	cif_flags;
 #define	CIF_PROMISC	0x00000001
 };
-
-#define	CARP_INET	0
-#define	CARP_INET6	1
-static int proto_reg[] = {-1, -1};
 
 /*
  * Brief design of carp(4).
@@ -304,7 +299,9 @@ SYSCTL_VNET_PCPUSTAT(_net_inet_carp, OID_AUTO, stats, struct carpstats,
 
 #define	DEMOTE_ADVSKEW(sc)					\
     (((sc)->sc_advskew + V_carp_demotion > CARP_MAXSKEW) ?	\
-    CARP_MAXSKEW : ((sc)->sc_advskew + V_carp_demotion))
+    CARP_MAXSKEW :						\
+        (((sc)->sc_advskew + V_carp_demotion < 0) ?		\
+        0 : ((sc)->sc_advskew + V_carp_demotion)))
 
 static void	carp_input_c(struct mbuf *, struct carp_header *, sa_family_t);
 static struct carp_softc
@@ -448,7 +445,7 @@ carp_hmac_verify(struct carp_softc *sc, uint32_t counter[2],
  * but it seems more efficient this way or not possible otherwise.
  */
 #ifdef INET
-int
+static int
 carp_input(struct mbuf **mp, int *offp, int proto)
 {
 	struct mbuf *m = *mp;
@@ -535,7 +532,7 @@ carp_input(struct mbuf **mp, int *offp, int proto)
 #endif
 
 #ifdef INET6
-int
+static int
 carp6_input(struct mbuf **mp, int *offp, int proto)
 {
 	struct mbuf *m = *mp;
@@ -852,6 +849,13 @@ static void
 carp_send_ad_error(struct carp_softc *sc, int error)
 {
 
+	/*
+	 * We track errors and successfull sends with this logic:
+	 * - Any error resets success counter to 0.
+	 * - MAX_ERRORS triggers demotion.
+	 * - MIN_SUCCESS successes resets error counter to 0.
+	 * - MIN_SUCCESS reverts demotion, if it was triggered before.
+	 */
 	if (error) {
 		if (sc->sc_sendad_errors < INT_MAX)
 			sc->sc_sendad_errors++;
@@ -863,17 +867,17 @@ carp_send_ad_error(struct carp_softc *sc, int error)
 			carp_demote_adj(V_carp_senderr_adj, msg);
 		}
 		sc->sc_sendad_success = 0;
-	} else {
-		if (sc->sc_sendad_errors >= CARP_SENDAD_MAX_ERRORS &&
-		    ++sc->sc_sendad_success >= CARP_SENDAD_MIN_SUCCESS) {
-			static const char fmt[] = "send ok on %s";
-			char msg[sizeof(fmt) + IFNAMSIZ];
+	} else if (sc->sc_sendad_errors > 0) {
+		if (++sc->sc_sendad_success >= CARP_SENDAD_MIN_SUCCESS) {
+			if (sc->sc_sendad_errors >= CARP_SENDAD_MAX_ERRORS) {
+				static const char fmt[] = "send ok on %s";
+				char msg[sizeof(fmt) + IFNAMSIZ];
 
-			sprintf(msg, fmt, sc->sc_carpdev->if_xname);
-			carp_demote_adj(-V_carp_senderr_adj, msg);
+				sprintf(msg, fmt, sc->sc_carpdev->if_xname);
+				carp_demote_adj(-V_carp_senderr_adj, msg);
+			}
 			sc->sc_sendad_errors = 0;
-		} else
-			sc->sc_sendad_errors = 0;
+		}
 	}
 }
 
@@ -2165,52 +2169,16 @@ carp_demote_adj_sysctl(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-#ifdef INET
-extern  struct domain inetdomain;
-static struct protosw in_carp_protosw = {
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_CARP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		carp_input,
-	.pr_output =		rip_output,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-};
-#endif
-
-#ifdef INET6
-extern	struct domain inet6domain;
-static struct protosw in6_carp_protosw = {
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inet6domain,
-	.pr_protocol =		IPPROTO_CARP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		carp6_input,
-	.pr_output =		rip6_output,
-	.pr_ctloutput =		rip6_ctloutput,
-	.pr_usrreqs =		&rip6_usrreqs
-};
-#endif
-
 static void
 carp_mod_cleanup(void)
 {
 
 #ifdef INET
-	if (proto_reg[CARP_INET] == 0) {
-		(void)ipproto_unregister(IPPROTO_CARP);
-		pf_proto_unregister(PF_INET, IPPROTO_CARP, SOCK_RAW);
-		proto_reg[CARP_INET] = -1;
-	}
+	(void)ipproto_unregister(IPPROTO_CARP);
 	carp_iamatch_p = NULL;
 #endif
 #ifdef INET6
-	if (proto_reg[CARP_INET6] == 0) {
-		(void)ip6proto_unregister(IPPROTO_CARP);
-		pf_proto_unregister(PF_INET6, IPPROTO_CARP, SOCK_RAW);
-		proto_reg[CARP_INET6] = -1;
-	}
+	(void)ip6proto_unregister(IPPROTO_CARP);
 	carp_iamatch6_p = NULL;
 	carp_macmatch6_p = NULL;
 #endif
@@ -2249,15 +2217,7 @@ carp_mod_load(void)
 #ifdef INET6
 	carp_iamatch6_p = carp_iamatch6;
 	carp_macmatch6_p = carp_macmatch6;
-	proto_reg[CARP_INET6] = pf_proto_register(PF_INET6,
-	    (struct protosw *)&in6_carp_protosw);
-	if (proto_reg[CARP_INET6]) {
-		printf("carp: error %d attaching to PF_INET6\n",
-		    proto_reg[CARP_INET6]);
-		carp_mod_cleanup();
-		return (proto_reg[CARP_INET6]);
-	}
-	err = ip6proto_register(IPPROTO_CARP);
+	err = ip6proto_register(IPPROTO_CARP, carp6_input, NULL);
 	if (err) {
 		printf("carp: error %d registering with INET6\n", err);
 		carp_mod_cleanup();
@@ -2266,14 +2226,7 @@ carp_mod_load(void)
 #endif
 #ifdef INET
 	carp_iamatch_p = carp_iamatch;
-	proto_reg[CARP_INET] = pf_proto_register(PF_INET, &in_carp_protosw);
-	if (proto_reg[CARP_INET]) {
-		printf("carp: error %d attaching to PF_INET\n",
-		    proto_reg[CARP_INET]);
-		carp_mod_cleanup();
-		return (proto_reg[CARP_INET]);
-	}
-	err = ipproto_register(IPPROTO_CARP);
+	err = ipproto_register(IPPROTO_CARP, carp_input, NULL);
 	if (err) {
 		printf("carp: error %d registering with INET\n", err);
 		carp_mod_cleanup();

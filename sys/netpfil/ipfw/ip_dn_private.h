@@ -374,7 +374,8 @@ struct dn_pkt_tag {
 	int dn_dir;		/* action when packet comes out.*/
 				/* see ip_fw_private.h		*/
 	uint64_t output_time;	/* when the pkt is due for delivery*/
-	struct ifnet *ifp;	/* interface, for ip_output	*/
+	uint16_t if_index;
+	uint16_t if_idxgen;
 	struct _ip6dn_args ip6opt;	/* XXX ipv6 options	*/
 	uint16_t iphdr_off;	/* IP header offset for mtodo()	*/
 };
@@ -399,6 +400,8 @@ VNET_DECLARE(struct dn_parms, dn_cfg);
 #define V_dn_cfg	VNET(dn_cfg)
 
 int dummynet_io(struct mbuf **, struct ip_fw_args *);
+void dummynet_sched_lock(void);
+void dummynet_sched_unlock(void);
 void dummynet_task(void *context, int pending);
 void dn_reschedule(void);
 struct dn_pkt_tag * dn_tag_get(struct mbuf *m);
@@ -437,7 +440,7 @@ int dn_compat_copy_queue(struct copy_args *a, void *_o);
 int dn_compat_copy_pipe(struct copy_args *a, void *_o);
 int copy_data_helper_compat(void *_o, void *_arg);
 int dn_compat_calc_size(void);
-int do_config(void *p, int l);
+int do_config(void *p, size_t l);
 
 /* function to drain idle object */
 void dn_drain_scheduler(void);

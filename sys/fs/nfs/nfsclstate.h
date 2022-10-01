@@ -67,6 +67,7 @@ struct nfsclsession {
 	SVCXPRT		*nfsess_xprt;		/* For backchannel callback */
 	uint32_t	nfsess_slotseq[64];	/* Max for 64bit nm_slots */
 	uint64_t	nfsess_slots;
+	uint64_t	nfsess_badslots;	/* Slots possibly broken */
 	uint32_t	nfsess_sequenceid;
 	uint32_t	nfsess_maxcache;	/* Max size for cached reply. */
 	uint32_t	nfsess_maxreq;		/* Max request size. */
@@ -273,6 +274,7 @@ struct nfscllayout {
 #define	NFSLY_RETONCLOSE	0x0080
 #define	NFSLY_WRITTEN		0x0100	/* Has been used to write to a DS. */
 #define	NFSLY_FLEXFILE		0x0200
+#define	NFSLY_RETURNED		0x0400
 
 /*
  * Flex file layout mirror specific stuff for nfsclflayout.

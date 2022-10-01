@@ -95,6 +95,10 @@
 
 #define	LINUX_AT_RANDOM_LEN	16	/* size of random bytes */
 
+#ifndef LINUX_AT_MINSIGSTKSZ
+#define	LINUX_AT_MINSIGSTKSZ	51	/* min stack size required by the kernel */
+#endif
+
 /* Linux sets the i387 to extended precision. */
 #if defined(__i386__) || defined(__amd64__)
 #define	__LINUX_NPXCW__		0x37f
@@ -136,6 +140,7 @@ extern int stclohz;
 #define	LINUX_P_ALL		0
 #define	LINUX_P_PID		1
 #define	LINUX_P_PGID		2
+#define	LINUX_P_PIDFD		3
 
 #define	LINUX_RLIMIT_LOCKS	10
 #define	LINUX_RLIMIT_SIGPENDING	11
@@ -153,10 +158,39 @@ extern int stclohz;
 /* Linux syslog flags */
 #define	LINUX_SYSLOG_ACTION_READ_ALL	3
 
-#if defined(__amd64__) && !defined(COMPAT_LINUX32)
+/* Linux seccomp flags */
+#define	LINUX_SECCOMP_GET_ACTION_AVAIL	2
+
+/* Linux /proc/self/oom_score_adj */
+#define	LINUX_OOM_SCORE_ADJ_MIN	-1000
+#define	LINUX_OOM_SCORE_ADJ_MAX	1000
+
+#if defined(__aarch64__) || (defined(__amd64__) && !defined(COMPAT_LINUX32))
 int linux_ptrace_status(struct thread *td, int pid, int status);
 #endif
 void linux_to_bsd_waitopts(int options, int *bsdopts);
 struct thread	*linux_tdfind(struct thread *, lwpid_t, pid_t);
+
+struct syscall_info {
+	uint8_t op;
+	uint32_t arch;
+	uint64_t instruction_pointer;
+	uint64_t stack_pointer;
+	union {
+		struct {
+			uint64_t nr;
+			uint64_t args[6];
+		} entry;
+		struct {
+			int64_t rval;
+			uint8_t is_error;
+		} exit;
+		struct {
+			uint64_t nr;
+			uint64_t args[6];
+			uint32_t ret_data;
+		} seccomp;
+	};
+};
 
 #endif	/* _LINUX_MISC_H_ */

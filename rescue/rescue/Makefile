@@ -99,12 +99,16 @@ CRUNCH_PROGS_sbin= 						\
 	md5 mdconfig mdmfs mknod mount mount_cd9660		\
 	mount_msdosfs mount_nfs mount_nullfs			\
 	mount_udf mount_unionfs newfs				\
-	newfs_msdos nos-tun ping reboot				\
+	newfs_msdos nos-tun reboot				\
 	restore rcorder route savecore		 		\
-	shutdown spppcontrol swapon sysctl tunefs umount
+	shutdown swapon sysctl tunefs umount
 
 .if ${MK_CCD} != "no"
 CRUNCH_PROGS_sbin+= ccdconfig
+.endif
+
+.if ${MK_INET} != "no" || ${MK_INET6} != "no"
+CRUNCH_PROGS_sbin+= ping
 .endif
 
 .if ${MK_INET6_SUPPORT} != "no"
@@ -131,10 +135,20 @@ CRUNCH_PROGS_usr.sbin+= zdb
 # crunchgen does not like C++ programs; this should be fixed someday
 # CRUNCH_PROGS+= devd
 
-CRUNCH_LIBS+= -l80211 -lalias -lcam -lncursesw_real -ldevstat -lipsec -llzma
+CRUNCH_LIBS+= -l80211 -lalias -lcam -lncursesw -ldevstat -lipsec -llzma
 .if ${MK_ZFS} != "no"
-CRUNCH_LIBS+= -lavl -lzpool -lzfs_core -lzfs -lnvpair -lpthread -luutil -lumem
-CRUNCH_LIBS+= -lbe -lzfsbootenv -lzutil -ltpool -lspl -licp_rescue
+CRUNCH_LIBS+= -lavl -lpthread -luutil -lumem -ltpool -lspl
+CRUNCH_LIBS_zfs+=	${LIBBE} \
+			${LIBZPOOL} \
+			${LIBZUTIL} \
+			${LIBZFS} \
+			${LIBZFS_CORE} \
+			${LIBZFSBOOTENV} \
+			${LIBICP_RESCUE} \
+			${LIBNVPAIR}
+CRUNCH_LIBS_bectl+=	${CRUNCH_LIBS_zfs}
+CRUNCH_LIBS_zpool+=	${CRUNCH_LIBS_zfs}
+CRUNCH_LIBS_zdb+=	${CRUNCH_LIBS_zfs}
 .else
 # liblzma needs pthread
 CRUNCH_LIBS+= -lpthread
@@ -231,11 +245,16 @@ CRUNCH_ALIAS_chown= chgrp
 CRUNCH_LIBS+=		${OBJTOP}/lib/libifconfig/libifconfig.a
 CRUNCH_BUILDOPTS+=	CRUNCH_CFLAGS+=-I${OBJTOP}/lib/libifconfig
 
+CRUNCH_LIBS_ifconfig+=	${LIBNV}
+
 CRUNCH_LIBS+= -lm
 
 .if ${MK_ISCSI} != "no"
 CRUNCH_PROGS_usr.bin+=	iscsictl
 CRUNCH_PROGS_usr.sbin+=	iscsid
+
+CRUNCH_LIBS+=		${OBJTOP}/lib/libiscsiutil/libiscsiutil.a
+CRUNCH_BUILDOPTS+=	CRUNCH_CFLAGS+=-I${OBJTOP}/lib/libiscsiutil
 .endif
 
 .include <bsd.crunchgen.mk>

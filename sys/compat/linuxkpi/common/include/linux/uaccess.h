@@ -30,8 +30,8 @@
  * $FreeBSD$
  */
 
-#ifndef	_LINUX_UACCESS_H_
-#define	_LINUX_UACCESS_H_
+#ifndef	_LINUXKPI_LINUX_UACCESS_H_
+#define	_LINUXKPI_LINUX_UACCESS_H_
 
 #include <sys/param.h>
 #include <sys/lock.h>
@@ -89,4 +89,29 @@ pagefault_disabled(void)
 	return ((curthread->td_pflags & TDP_NOFAULTING) != 0);
 }
 
-#endif					/* _LINUX_UACCESS_H_ */
+static inline int
+__copy_to_user_inatomic(void __user *to, const void *from, unsigned n)
+{
+
+	return (copyout_nofault(from, to, n) != 0 ? n : 0);
+}
+#define	__copy_to_user_inatomic_nocache(to, from, n)	\
+	__copy_to_user_inatomic((to), (from), (n))
+
+static inline unsigned long
+__copy_from_user_inatomic(void *to, const void __user *from,
+    unsigned long n)
+{
+	/*
+	 * XXXKIB.  Equivalent Linux function is implemented using
+	 * MOVNTI for aligned moves.  For unaligned head and tail,
+	 * normal move is performed.  As such, it is not incorrect, if
+	 * only somewhat slower, to use normal copyin.  All uses
+	 * except shmem_pwrite_fast() have the destination mapped WC.
+	 */
+	return ((copyin_nofault(__DECONST(void *, from), to, n) != 0 ? n : 0));
+}
+#define	__copy_from_user_inatomic_nocache(to, from, n)	\
+	__copy_from_user_inatomic((to), (from), (n))
+
+#endif					/* _LINUXKPI_LINUX_UACCESS_H_ */

@@ -1,5 +1,10 @@
 # `bc`
 
+***WARNING: New user registration for https://git.yzena.com/ is disabled because
+of spam. If you need to report a bug with `bc`, email gavin at this site minus
+the `git.` part for an account, and I will create one for you. Or you can report
+an issue at [GitHub][29].***
+
 ***WARNING: This project has moved to [https://git.yzena.com/][20] for [these
 reasons][21], though GitHub will remain a mirror.***
 
@@ -58,8 +63,8 @@ system.
 This `bc` should build unmodified on any POSIX-compliant system or on Windows
 starting with Windows 10 (though earlier versions may work).
 
-For more complex build requirements than the ones below, see the
-[build manual][5].
+For more complex build requirements than the ones below, see the [build
+manual][5].
 
 ### Windows
 
@@ -71,43 +76,50 @@ Also, if building with MSBuild, the MSBuild bundled with Visual Studio is
 required.
 
 **Note**: Unlike the POSIX-compatible platforms, only one build configuration is
-supported on Windows: extra math and prompt enabled, history and NLS (locale
-support) disabled, with both calculators built.
+supported on Windows: extra math and history enabled, NLS (locale support)
+disabled, with both calculators built.
 
 #### `bc`
 
-To build `bc`, you can open the `bc.sln` file in Visual Studio, select the
+To build `bc`, you can open the `vs/bc.sln` file in Visual Studio, select the
 configuration, and build.
 
 You can also build using MSBuild with the following from the root directory:
 
 ```
-msbuild -property:Configuration=<config> bc.sln
+msbuild -property:Configuration=<config> vs/bc.sln
 ```
 
 where `<config>` is either one of `Debug` or `Release`.
 
+On Windows, the calculators are built as `vs/bin/<platform>/<config>/bc.exe` and
+`vs/bin/<Platform>/<Config>/dc.exe`, where `<platform>` can be either `Win32` or
+`x64`, and `<config>` can be `Debug` or `Release`.
+
+**Note**: On Windows, `dc.exe` is just copied from `bc.exe`; it is not linked.
+Patches are welcome for a way to do that.
+
 #### `bcl` (Library)
 
-To build the library, you can open the `bcl.sln` file in Visual Studio, select
-the configuration, and build.
+To build the library, you can open the `vs/bcl.sln` file in Visual Studio,
+select the configuration, and build.
 
 You can also build using MSBuild with the following from the root directory:
 
 ```
-msbuild -property:Configuration=<config> bcl.sln
+msbuild -property:Configuration=<config> vs/bcl.sln
 ```
 
-where `<config>` is either one of `Debug` or `Release`.
+where `<config>` is either one of `Debug`, `ReleaseMD`, or `ReleaseMT`.
+
+On Windows, the library is built as `vs/lib/<platform>/<config>/bcl.lib`, where
+`<platform>` can be either `Win32` or `x64`, and `<config>` can be `Debug`,
+`ReleaseMD`, or `ReleaseMT`.
 
 ### POSIX-Compatible Systems
 
 On POSIX-compatible systems, `bc` is built as `bin/bc` and `dc` is built as
-`bin/dc` by default. On Windows, they are built as `Release/bc/bc.exe` and
-`Release/bc/dc.exe`.
-
-**Note**: On Windows, `dc.exe` is just copied from `bc.exe`; it is not linked.
-Patches are welcome for a way to do that.
+`bin/dc` by default.
 
 #### Default
 
@@ -172,10 +184,25 @@ see the [build manual][5].
 The library API can be found in [`manuals/bcl.3.md`][26] or `man bcl` once the
 library is installed.
 
-The library is built as `bin/libbcl.a` on POSIX-compatible systems or as
-`Release/bcl/bcl.lib` on Windows.
-
 #### Package and Distro Maintainers
+
+This section is for package and distro maintainers.
+
+##### Out-of-Source Builds
+
+Out-of-source builds are supported; just call `configure.sh` from the directory
+where the actual build will happen.
+
+For example, if the source is in `bc`, the build should happen in `build`, then
+call `configure.sh` and `make` like so:
+
+```
+../bc/configure.sh
+make
+```
+
+***WARNING***: The path to `configure.sh` from the build directory must not have
+spaces because `make` does not support target names with spaces.
 
 ##### Recommended Compiler
 
@@ -264,8 +291,7 @@ with POSIX `bc`. The math has been tested with 40+ million random problems, so
 it is as correct as I can make it.
 
 This `bc` can be used as a drop-in replacement for any existing `bc`. This `bc`
-is also compatible with MinGW toolchains, though history is not supported on
-Windows.
+is also compatible with MinGW toolchains.
 
 In addition, this `bc` is considered complete; i.e., there will be no more
 releases with additional features. However, it *is* actively maintained, so if
@@ -373,28 +399,25 @@ Files:
 
 	.gitignore           The git ignore file (maintainer use only).
 	.gitattributes       The git attributes file (maintainer use only).
-	bc.sln               The Visual Studio solution file for bc.
-	bc.vcxproj           The Visual Studio project file for bc.
-	bc.vcxproj.filters   The Visual Studio filters file for bc.
-	bcl.sln              The Visual Studio solution file for bcl.
-	bcl.vcxproj          The Visual Studio project file for bcl.
-	bcl.vcxproj.filters  The Visual Studio filters file for bcl.
+	bcl.pc.in            A template pkg-config file for bcl.
 	configure            A symlink to configure.sh to make packaging easier.
 	configure.sh         The configure script.
 	LICENSE.md           A Markdown form of the BSD 2-clause License.
 	Makefile.in          The Makefile template.
+	NEWS.md              The changelog.
 	NOTICE.md            List of contributors and copyright owners.
-	RELEASE.md           A checklist for making a release (maintainer use only).
 
 Folders:
 
-	gen      The bc math library, help texts, and code to generate C source.
-	include  All header files.
-	locales  Locale files, in .msg format. Patches welcome for translations.
-	manuals  Manuals for both programs.
-	src      All source code.
-	scripts  A bunch of shell scripts to help with development and building.
-	tests    All tests.
+	benchmarks  A folder of benchmarks for various aspects of bc performance.
+	gen         The bc math library, help texts, and code to generate C source.
+	include     All header files.
+	locales     Locale files, in .msg format. Patches welcome for translations.
+	manuals     Manuals for both programs.
+	src         All source code.
+	scripts     A bunch of shell scripts to help with development and building.
+	tests       All tests.
+	vs          Files needed for the build on Windows.
 
 [1]: https://www.gnu.org/software/bc/
 [4]: ./LICENSE.md
@@ -417,3 +440,4 @@ Folders:
 [26]: ./manuals/bcl.3.md
 [27]: https://en.wikipedia.org/wiki/Bus_factor
 [28]: ./manuals/development.md
+[29]: https://github.com/gavinhoward/bc

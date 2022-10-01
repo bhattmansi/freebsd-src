@@ -29,8 +29,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_KERNEL_H_
-#define	_LINUX_KERNEL_H_
+#ifndef	_LINUXKPI_LINUX_KERNEL_H_
+#define	_LINUXKPI_LINUX_KERNEL_H_
 
 #include <sys/cdefs.h>
 #include <sys/types.h>
@@ -49,10 +49,13 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/types.h>
+#include <linux/typecheck.h>
 #include <linux/jiffies.h>
 #include <linux/log2.h>
 
 #include <asm/byteorder.h>
+#include <asm/cpufeature.h>
+#include <asm/processor.h>
 #include <asm/uaccess.h>
 
 #include <machine/stdarg.h>
@@ -109,9 +112,7 @@
 #define	BUILD_BUG_ON_MSG(x, msg)	BUILD_BUG_ON(x)
 #define	BUILD_BUG_ON_NOT_POWER_OF_2(x)	BUILD_BUG_ON(!powerof2(x))
 #define	BUILD_BUG_ON_INVALID(expr)	while (0) { (void)(expr); }
-
-extern const volatile int lkpi_build_bug_on_zero;
-#define	BUILD_BUG_ON_ZERO(x)	((x) ? lkpi_build_bug_on_zero : 0)
+#define	BUILD_BUG_ON_ZERO(x)	((int)sizeof(struct { int:-((x) != 0); }))
 
 #define	BUG()			panic("BUG at %s:%d", __FILE__, __LINE__)
 #define	BUG_ON(cond)		do {				\
@@ -121,34 +122,38 @@ extern const volatile int lkpi_build_bug_on_zero;
 	}							\
 } while (0)
 
+extern int linuxkpi_warn_dump_stack;
 #define	WARN_ON(cond) ({					\
-      bool __ret = (cond);					\
-      if (__ret) {						\
+	bool __ret = (cond);					\
+	if (__ret) {						\
 		printf("WARNING %s failed at %s:%d\n",		\
 		    __stringify(cond), __FILE__, __LINE__);	\
-		linux_dump_stack();				\
-      }								\
-      unlikely(__ret);						\
+		if (linuxkpi_warn_dump_stack)				\
+			linux_dump_stack();				\
+	}								\
+	unlikely(__ret);						\
 })
 
 #define	WARN_ON_SMP(cond)	WARN_ON(cond)
 
 #define	WARN_ON_ONCE(cond) ({					\
-      static bool __warn_on_once;				\
-      bool __ret = (cond);					\
-      if (__ret && !__warn_on_once) {				\
+	static bool __warn_on_once;				\
+	bool __ret = (cond);					\
+	if (__ret && !__warn_on_once) {				\
 		__warn_on_once = 1;				\
 		printf("WARNING %s failed at %s:%d\n",		\
 		    __stringify(cond), __FILE__, __LINE__);	\
-		linux_dump_stack();				\
-      }								\
-      unlikely(__ret);						\
+		if (linuxkpi_warn_dump_stack)				\
+			linux_dump_stack();				\
+	}								\
+	unlikely(__ret);						\
 })
 
 #define	oops_in_progress	SCHEDULER_STOPPED()
 
 #undef	ALIGN
 #define	ALIGN(x, y)		roundup2((x), (y))
+#define	ALIGN_DOWN(x, y)	rounddown2(x, y)
 #undef PTR_ALIGN
 #define	PTR_ALIGN(p, a)		((__typeof(p))ALIGN((uintptr_t)(p), (a)))
 #define	IS_ALIGNED(x, a)	(((x) & ((__typeof(x))(a) - 1)) == 0)
@@ -394,6 +399,24 @@ kstrtouint(const char *cp, unsigned int base, unsigned int *res)
 }
 
 static inline int
+kstrtou8(const char *cp, unsigned int base, u8 *res)
+{
+	char *end;
+	unsigned long temp;
+
+	*res = temp = strtoul(cp, &end, base);
+
+	/* skip newline character, if any */
+	if (*end == '\n')
+		end++;
+	if (*cp == 0 || *end != 0)
+		return (-EINVAL);
+	if (temp != (u8)temp)
+		return (-ERANGE);
+	return (0);
+}
+
+static inline int
 kstrtou16(const char *cp, unsigned int base, u16 *res)
 {
 	char *end;
@@ -445,6 +468,12 @@ kstrtou64(const char *cp, unsigned int base, u64 *res)
 }
 
 static inline int
+kstrtoull(const char *cp, unsigned int base, unsigned long long *res)
+{
+	return (kstrtou64(cp, base, (u64 *)res));
+}
+
+static inline int
 kstrtobool(const char *s, bool *res)
 {
 	int len;
@@ -482,6 +511,51 @@ kstrtobool_from_user(const char __user *s, size_t count, bool *res)
 		return (-EFAULT);
 
 	return (kstrtobool(buf, res));
+}
+
+static inline int
+kstrtoint_from_user(const char __user *s, size_t count, unsigned int base,
+    int *p)
+{
+	char buf[36] = {};
+
+	if (count > (sizeof(buf) - 1))
+		count = (sizeof(buf) - 1);
+
+	if (copy_from_user(buf, s, count))
+		return (-EFAULT);
+
+	return (kstrtoint(buf, base, p));
+}
+
+static inline int
+kstrtouint_from_user(const char __user *s, size_t count, unsigned int base,
+    int *p)
+{
+	char buf[36] = {};
+
+	if (count > (sizeof(buf) - 1))
+		count = (sizeof(buf) - 1);
+
+	if (copy_from_user(buf, s, count))
+		return (-EFAULT);
+
+	return (kstrtouint(buf, base, p));
+}
+
+static inline int
+kstrtou8_from_user(const char __user *s, size_t count, unsigned int base,
+    u8 *p)
+{
+	char buf[8] = {};
+
+	if (count > (sizeof(buf) - 1))
+		count = (sizeof(buf) - 1);
+
+	if (copy_from_user(buf, s, count))
+		return (-EFAULT);
+
+	return (kstrtou8(buf, base, p));
 }
 
 #define min(x, y)	((x) < (y) ? (x) : (y))
@@ -525,10 +599,6 @@ kstrtobool_from_user(const char __user *s, size_t count, bool *res)
 extern bool linux_cpu_has_clflush;
 #define	cpu_has_clflush		linux_cpu_has_clflush
 #endif
-
-typedef struct pm_message {
-	int event;
-} pm_message_t;
 
 /* Swap values of a and b */
 #define swap(a, b) do {			\
@@ -612,6 +682,42 @@ linux_ratelimited(linux_ratelimit_t *rl)
 
 #define	TAINT_WARN	0
 #define	test_taint(x)	(0)
+#define	add_taint(x,y)	do {	\
+	} while (0)
+
+static inline int
+_h2b(const char c)
+{
+
+	if (c >= '0' && c <= '9')
+		return (c - '0');
+	if (c >= 'a' && c <= 'f')
+		return (10 + c - 'a');
+	if (c >= 'A' && c <= 'F')
+		return (10 + c - 'A');
+	return (-EINVAL);
+}
+
+static inline int
+hex2bin(uint8_t *bindst, const char *hexsrc, size_t binlen)
+{
+	int hi4, lo4;
+
+	while (binlen > 0) {
+		hi4 = _h2b(*hexsrc++);
+		lo4 = _h2b(*hexsrc++);
+		if (hi4 < 0 || lo4 < 0)
+			return (-EINVAL);
+
+		*bindst++ = (hi4 << 4) | lo4;
+		binlen--;
+	}
+
+	return (0);
+}
+
+#define	DECLARE_FLEX_ARRAY(_t, _n)					\
+    struct { struct { } __dummy_ ## _n; _t _n[0]; }
 
 /*
  * Checking if an option is defined would be easy if we could do CPP inside CPP.
@@ -655,4 +761,4 @@ linux_ratelimited(linux_ratelimit_t *rl)
 #define	IS_REACHABLE(_x)	(IS_BUILTIN(_x) || \
 				    (IS_MODULE(_x) && IS_BUILTIN(MODULE)))
 
-#endif	/* _LINUX_KERNEL_H_ */
+#endif	/* _LINUXKPI_LINUX_KERNEL_H_ */

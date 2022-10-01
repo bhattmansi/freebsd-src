@@ -172,7 +172,7 @@ SYSCTL_PROC(_net_wlan_hwmp, OID_AUTO, net_diameter_traversal_time,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
     &ieee80211_hwmp_net_diameter_traversaltime, 0,
     ieee80211_sysctl_msecs_ticks, "I",
-    "estimate travelse time across the MBSS (ms)");
+    "estimate traversal time across the MBSS (ms)");
 static int	ieee80211_hwmp_roottimeout = -1;
 SYSCTL_PROC(_net_wlan_hwmp, OID_AUTO, roottimeout,
     CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE,
@@ -646,7 +646,7 @@ hwmp_send_action(struct ieee80211vap *vap,
 	}
 
 	m->m_pkthdr.len = m->m_len = frm - mtod(m, uint8_t *);
-	M_PREPEND(m, sizeof(struct ieee80211_frame), M_NOWAIT);
+	M_PREPEND(m, sizeof(struct ieee80211_frame), IEEE80211_M_NOWAIT);
 	if (m == NULL) {
 		ieee80211_free_node(ni);
 		vap->iv_stats.is_tx_nobuf++;

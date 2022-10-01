@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2015 Mellanox Technologies. All rights reserved.
+ * Copyright (c) 2015-2021 Mellanox Technologies. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -25,7 +25,10 @@
  * $FreeBSD$
  */
 
-#include "en.h"
+#include "opt_rss.h"
+#include "opt_ratelimit.h"
+
+#include <dev/mlx5/mlx5_en/en.h>
 #include <machine/in_cksum.h>
 
 static inline int
@@ -211,7 +214,10 @@ static uint64_t
 mlx5e_mbuf_tstmp(struct mlx5e_priv *priv, uint64_t hw_tstmp)
 {
 	struct mlx5e_clbr_point *cp, dcp;
-	uint64_t a1, a2, res;
+	uint64_t tstmp_sec, tstmp_nsec;
+	uint64_t hw_clocks;
+	uint64_t rt_cur_to_prev, res_s, res_n, res_s_modulo, res;
+	uint64_t hw_clk_div;
 	u_int gen;
 
 	do {
@@ -221,19 +227,49 @@ mlx5e_mbuf_tstmp(struct mlx5e_priv *priv, uint64_t hw_tstmp)
 			return (0);
 		dcp = *cp;
 		atomic_thread_fence_acq();
-	} while (gen != cp->clbr_gen);
-
-	a1 = (hw_tstmp - dcp.clbr_hw_prev) >> MLX5E_TSTMP_PREC;
-	a2 = (dcp.base_curr - dcp.base_prev) >> MLX5E_TSTMP_PREC;
-	res = (a1 * a2) << MLX5E_TSTMP_PREC;
-
+	} while (gen != dcp.clbr_gen);
 	/*
-	 * Divisor cannot be zero because calibration callback
-	 * checks for the condition and disables timestamping
-	 * if clock halted.
+	 * Our goal here is to have a result that is:
+	 *
+	 * (                             (cur_time - prev_time)   )
+	 * ((hw_tstmp - hw_prev) *  ----------------------------- ) + prev_time
+	 * (                             (hw_cur - hw_prev)       )
+	 *
+	 * With the constraints that we cannot use float and we
+	 * don't want to overflow the uint64_t numbers we are using.
+	 *
+	 * The plan is to take the clocking value of the hw timestamps
+	 * and split them into seconds and nanosecond equivalent portions.
+	 * Then we operate on the two portions seperately making sure to
+	 * bring back the carry over from the seconds when we divide.
+	 *
+	 * First up lets get the two divided into separate entities
+	 * i.e. the seconds. We use the clock frequency for this.
+	 * Note that priv->cclk was setup with the clock frequency
+	 * in hz so we are all set to go.
 	 */
-	res /= (dcp.clbr_hw_curr - dcp.clbr_hw_prev) >> MLX5E_TSTMP_PREC;
-
+	hw_clocks = hw_tstmp - dcp.clbr_hw_prev;
+	tstmp_sec = hw_clocks / priv->cclk;
+	tstmp_nsec = hw_clocks % priv->cclk;
+	/* Now work with them separately */
+	rt_cur_to_prev = (dcp.base_curr - dcp.base_prev);
+	res_s = tstmp_sec * rt_cur_to_prev;
+	res_n = tstmp_nsec * rt_cur_to_prev;
+	/* Now lets get our divider */
+	hw_clk_div = dcp.clbr_hw_curr - dcp.clbr_hw_prev;
+	/* Make sure to save the remainder from the seconds divide */
+	res_s_modulo = res_s % hw_clk_div;
+	res_s /= hw_clk_div;
+	/* scale the remainder to where it should be */
+	res_s_modulo *= priv->cclk;
+	/* Now add in the remainder */
+	res_n += res_s_modulo;
+	/* Now do the divide */
+	res_n /= hw_clk_div;
+	res_s *= priv->cclk;
+	/* Recombine the two */
+	res = res_s + res_n;
+	/* And now add in the base time to get to the real timestamp */
 	res += dcp.base_prev;
 	return (res);
 }
@@ -316,6 +352,7 @@ mlx5e_build_rx_mbuf(struct mlx5_cqe64 *cqe,
 		M_HASHTYPE_SET(mb, M_HASHTYPE_OPAQUE);
 	}
 	mb->m_pkthdr.rcvif = ifp;
+	mb->m_pkthdr.leaf_rcvif = ifp;
 
 	if (cqe_is_tunneled(cqe)) {
 		/*
@@ -330,11 +367,13 @@ mlx5e_build_rx_mbuf(struct mlx5_cqe64 *cqe,
 			    CSUM_IP_CHECKED | CSUM_IP_VALID |
 			    CSUM_DATA_VALID | CSUM_PSEUDO_HDR;
 			mb->m_pkthdr.csum_data = htons(0xffff);
-		}
-		if (((cqe->hds_ip_ext & (CQE_L2_OK | CQE_L3_OK | CQE_L4_OK)) ==
-		    (CQE_L2_OK | CQE_L3_OK | CQE_L4_OK))) {
-			mb->m_pkthdr.csum_flags |=
-			    CSUM_INNER_L4_CALC | CSUM_INNER_L4_VALID;
+
+			if (likely((cqe->hds_ip_ext & CQE_L4_OK) == CQE_L4_OK)) {
+				mb->m_pkthdr.csum_flags |=
+				    CSUM_INNER_L4_CALC | CSUM_INNER_L4_VALID;
+			}
+		} else {
+			rq->stats.csum_none++;
 		}
 	} else if (likely((ifp->if_capenable & (IFCAP_RXCSUM |
 	    IFCAP_RXCSUM_IPV6)) != 0) &&
@@ -364,8 +403,22 @@ mlx5e_build_rx_mbuf(struct mlx5_cqe64 *cqe,
 			tstmp &= ~MLX5_CQE_TSTMP_PTP;
 			mb->m_flags |= M_TSTMP_HPREC;
 		}
-		mb->m_pkthdr.rcv_tstmp = tstmp;
-		mb->m_flags |= M_TSTMP;
+		if (tstmp != 0) {
+			mb->m_pkthdr.rcv_tstmp = tstmp;
+			mb->m_flags |= M_TSTMP;
+		}
+	}
+	switch (get_cqe_tls_offload(cqe)) {
+	case CQE_TLS_OFFLOAD_DECRYPTED:
+		/* set proper checksum flag for decrypted packets */
+		mb->m_pkthdr.csum_flags |= CSUM_TLS_DECRYPTED;
+		rq->stats.decrypted_ok_packets++;
+		break;
+	case CQE_TLS_OFFLOAD_ERROR:
+		rq->stats.decrypted_error_packets++;
+		break;
+	default:
+		break;
 	}
 }
 
@@ -477,6 +530,7 @@ mlx5e_poll_rx_cq(struct mlx5e_rq *rq, int budget)
 		    BUS_DMASYNC_POSTREAD);
 
 		if (unlikely((cqe->op_own >> 4) != MLX5_CQE_RESP_SEND)) {
+			mlx5e_dump_err_cqe(&rq->cq, rq->rqn, (const void *)cqe);
 			rq->stats.wqe_err++;
 			goto wq_ll_pop;
 		}
@@ -563,6 +617,7 @@ wq_ll_pop:
 void
 mlx5e_rx_cq_comp(struct mlx5_core_cq *mcq, struct mlx5_eqe *eqe __unused)
 {
+	struct mlx5e_channel *c = container_of(mcq, struct mlx5e_channel, rq.cq.mcq);
 	struct mlx5e_rq *rq = container_of(mcq, struct mlx5e_rq, cq.mcq);
 	int i = 0;
 
@@ -578,9 +633,19 @@ mlx5e_rx_cq_comp(struct mlx5_core_cq *mcq, struct mlx5_eqe *eqe __unused)
 		memset(mb->m_data, 255, 14);
 		mb->m_data[14] = rq->ix;
 		mb->m_pkthdr.rcvif = rq->ifp;
+		mb->m_pkthdr.leaf_rcvif = rq->ifp;
 		rq->ifp->if_input(rq->ifp, mb);
 	}
 #endif
+	for (int j = 0; j != MLX5E_MAX_TX_NUM_TC; j++) {
+		mtx_lock(&c->sq[j].lock);
+		c->sq[j].db_inhibit++;
+		mtx_unlock(&c->sq[j].lock);
+	}
+
+	mtx_lock(&c->iq.lock);
+	c->iq.db_inhibit++;
+	mtx_unlock(&c->iq.lock);
 
 	mtx_lock(&rq->mtx);
 
@@ -604,4 +669,17 @@ mlx5e_rx_cq_comp(struct mlx5_core_cq *mcq, struct mlx5_eqe *eqe __unused)
 	mlx5e_cq_arm(&rq->cq, MLX5_GET_DOORBELL_LOCK(&rq->channel->priv->doorbell_lock));
 	tcp_lro_flush_all(&rq->lro);
 	mtx_unlock(&rq->mtx);
+
+	for (int j = 0; j != MLX5E_MAX_TX_NUM_TC; j++) {
+		mtx_lock(&c->sq[j].lock);
+		c->sq[j].db_inhibit--;
+		/* Update the doorbell record, if any. */
+		mlx5e_tx_notify_hw(c->sq + j, true);
+		mtx_unlock(&c->sq[j].lock);
+	}
+
+	mtx_lock(&c->iq.lock);
+	c->iq.db_inhibit--;
+	mlx5e_iq_notify_hw(&c->iq);
+	mtx_unlock(&c->iq.lock);
 }

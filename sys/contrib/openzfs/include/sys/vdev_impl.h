@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -295,6 +295,7 @@ struct vdev {
 	list_node_t	vdev_state_dirty_node; /* state dirty list	*/
 	uint64_t	vdev_deflate_ratio; /* deflation ratio (x512)	*/
 	uint64_t	vdev_islog;	/* is an intent log device	*/
+	uint64_t	vdev_noalloc;	/* device is passivated?	*/
 	uint64_t	vdev_removing;	/* device is being removed?	*/
 	boolean_t	vdev_ishole;	/* is a hole in the namespace	*/
 	uint64_t	vdev_top_zap;
@@ -520,8 +521,8 @@ typedef struct vdev_boot_envblock {
 			sizeof (zio_eck_t)];
 	zio_eck_t	vbe_zbt;
 } vdev_boot_envblock_t;
-
-CTASSERT_GLOBAL(sizeof (vdev_boot_envblock_t) == VDEV_PAD_SIZE);
+_Static_assert(sizeof (vdev_boot_envblock_t) == VDEV_PAD_SIZE,
+	"vdev_boot_envblock_t wrong size");
 
 typedef struct vdev_label {
 	char		vl_pad1[VDEV_PAD_SIZE];			/*  8K */
@@ -625,8 +626,6 @@ extern uint64_t vdev_get_ndisks(vdev_t *vd);
  * Global variables
  */
 extern int zfs_vdev_standard_sm_blksz;
-/* zdb uses this tunable, so it must be declared here to make lint happy. */
-extern int zfs_vdev_cache_size;
 
 /*
  * Functions from vdev_indirect.c
@@ -642,6 +641,7 @@ extern int vdev_obsolete_counts_are_precise(vdev_t *vd, boolean_t *are_precise);
  */
 int vdev_checkpoint_sm_object(vdev_t *vd, uint64_t *sm_obj);
 void vdev_metaslab_group_create(vdev_t *vd);
+uint64_t vdev_best_ashift(uint64_t logical, uint64_t a, uint64_t b);
 
 /*
  * Vdev ashift optimization tunables

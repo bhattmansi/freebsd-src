@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -97,8 +97,8 @@ _LIBZUTIL_H int zfs_append_partition(char *path, size_t max_len);
 _LIBZUTIL_H int zfs_resolve_shortname(const char *name, char *path,
     size_t pathlen);
 
-_LIBZUTIL_H char *zfs_strip_partition(char *);
-_LIBZUTIL_H char *zfs_strip_path(char *);
+_LIBZUTIL_H char *zfs_strip_partition(const char *);
+_LIBZUTIL_H const char *zfs_strip_path(const char *);
 
 _LIBZUTIL_H int zfs_strcmp_pathname(const char *, const char *, int);
 
@@ -146,7 +146,6 @@ _LIBZUTIL_H int zpool_history_unpack(char *, uint64_t, uint64_t *, nvlist_t ***,
     uint_t *);
 
 struct zfs_cmd;
-_LIBZUTIL_H int zfs_ioctl_fd(int fd, unsigned long request, struct zfs_cmd *zc);
 
 /*
  * List of colors to use
@@ -156,13 +155,23 @@ _LIBZUTIL_H int zfs_ioctl_fd(int fd, unsigned long request, struct zfs_cmd *zc);
 #define	ANSI_RESET	"\033[0m"
 #define	ANSI_BOLD	"\033[1m"
 
-_LIBZUTIL_H void color_start(char *color);
+_LIBZUTIL_H void color_start(const char *color);
 _LIBZUTIL_H void color_end(void);
-_LIBZUTIL_H int printf_color(char *color, char *format, ...);
+_LIBZUTIL_H int printf_color(const char *color, const char *format, ...);
 
 _LIBZUTIL_H const char *zfs_basename(const char *path);
 _LIBZUTIL_H ssize_t zfs_dirnamelen(const char *path);
 
+/*
+ * These functions are used by the ZFS libraries and cmd/zpool code, but are
+ * not exported in the ABI.
+ */
+typedef int (*pool_vdev_iter_f)(void *, nvlist_t *, void *);
+int for_each_vdev_cb(void *zhp, nvlist_t *nv, pool_vdev_iter_f func,
+    void *data);
+int for_each_vdev_in_nvlist(nvlist_t *nvroot, pool_vdev_iter_f func,
+    void *data);
+void update_vdevs_config_dev_sysfs_path(nvlist_t *config);
 #ifdef	__cplusplus
 }
 #endif

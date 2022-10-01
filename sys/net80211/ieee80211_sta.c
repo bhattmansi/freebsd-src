@@ -552,6 +552,35 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
 	int is_hw_decrypted = 0;
 	int has_decrypted = 0;
 
+	KASSERT(ni != NULL, ("%s: null node, mbuf %p", __func__, m));
+
+	/* Early init in case of early error case. */
+	type = -1;
+
+	/*
+	 * Bit of a cheat here, we use a pointer for a 3-address
+	 * frame format but don't reference fields past outside
+	 * ieee80211_frame_min (or other shorter frames) w/o first
+	 * validating the data is present.
+	 */
+	wh = mtod(m, struct ieee80211_frame *);
+
+	if (m->m_pkthdr.len < 2 || m->m_pkthdr.len < ieee80211_anyhdrsize(wh)) {
+		IEEE80211_DISCARD_MAC(vap, IEEE80211_MSG_ANY,
+		    ni->ni_macaddr, NULL,
+		    "too short (1): len %u", m->m_pkthdr.len);
+		vap->iv_stats.is_rx_tooshort++;
+		goto err;
+	}
+	if ((wh->i_fc[0] & IEEE80211_FC0_VERSION_MASK) !=
+	    IEEE80211_FC0_VERSION_0) {
+		IEEE80211_DISCARD_MAC(vap, IEEE80211_MSG_ANY,
+		    ni->ni_macaddr, NULL, "wrong version, fc %02x:%02x",
+		    wh->i_fc[0], wh->i_fc[1]);
+		vap->iv_stats.is_rx_badversion++;
+		goto err;
+	}
+
 	/*
 	 * Some devices do hardware decryption all the way through
 	 * to pretending the frame wasn't encrypted in the first place.
@@ -569,47 +598,26 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
 		 * with the M_AMPDU_MPDU flag and we can bypass most of
 		 * the normal processing.
 		 */
-		wh = mtod(m, struct ieee80211_frame *);
 		type = IEEE80211_FC0_TYPE_DATA;
 		dir = wh->i_fc[1] & IEEE80211_FC1_DIR_MASK;
-		subtype = IEEE80211_FC0_SUBTYPE_QOS;
+		subtype = IEEE80211_FC0_SUBTYPE_QOS_DATA;
 		hdrspace = ieee80211_hdrspace(ic, wh);	/* XXX optimize? */
 		goto resubmit_ampdu;
 	}
 
-	KASSERT(ni != NULL, ("null node"));
 	ni->ni_inact = ni->ni_inact_reload;
-
-	type = -1;			/* undefined */
-
-	if (m->m_pkthdr.len < sizeof(struct ieee80211_frame_min)) {
-		IEEE80211_DISCARD_MAC(vap, IEEE80211_MSG_ANY,
-		    ni->ni_macaddr, NULL,
-		    "too short (1): len %u", m->m_pkthdr.len);
-		vap->iv_stats.is_rx_tooshort++;
-		goto out;
-	}
-	/*
-	 * Bit of a cheat here, we use a pointer for a 3-address
-	 * frame format but don't reference fields past outside
-	 * ieee80211_frame_min w/o first validating the data is
-	 * present.
-	 */
-	wh = mtod(m, struct ieee80211_frame *);
-
-	if ((wh->i_fc[0] & IEEE80211_FC0_VERSION_MASK) !=
-	    IEEE80211_FC0_VERSION_0) {
-		IEEE80211_DISCARD_MAC(vap, IEEE80211_MSG_ANY,
-		    ni->ni_macaddr, NULL, "wrong version, fc %02x:%02x",
-		    wh->i_fc[0], wh->i_fc[1]);
-		vap->iv_stats.is_rx_badversion++;
-		goto err;
-	}
 
 	dir = wh->i_fc[1] & IEEE80211_FC1_DIR_MASK;
 	type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
 	subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
-	if ((ic->ic_flags & IEEE80211_F_SCAN) == 0) {
+	/*
+	 * Control frames are not folowing the header scheme of data and mgmt
+	 * frames so we do not apply extra checks here.
+	 * We probably should do checks on RA (+TA) where available for those
+	 * too, but for now do not drop them.
+	 */
+	if (type != IEEE80211_FC0_TYPE_CTL &&
+	    (ic->ic_flags & IEEE80211_F_SCAN) == 0) {
 		bssid = wh->i_addr2;
 		if (!IEEE80211_ADDR_EQ(bssid, ni->ni_bssid)) {
 			/* not interested in */
@@ -759,7 +767,7 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
 		 * crypto cipher modules used to do delayed update
 		 * of replay sequence numbers.
 		 */
-		if (is_hw_decrypted || wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
+		if (is_hw_decrypted || IEEE80211_IS_PROTECTED(wh)) {
 			if ((vap->iv_flags & IEEE80211_F_PRIVACY) == 0) {
 				/*
 				 * Discard encrypted frames when privacy is off.
@@ -786,7 +794,7 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
 		/*
 		 * Save QoS bits for use below--before we strip the header.
 		 */
-		if (subtype == IEEE80211_FC0_SUBTYPE_QOS)
+		if (subtype == IEEE80211_FC0_SUBTYPE_QOS_DATA)
 			qos = ieee80211_getqos(wh)[0];
 		else
 			qos = 0;
@@ -931,7 +939,7 @@ sta_input(struct ieee80211_node *ni, struct mbuf *m,
 		 * Again, having encrypted flag set check would be good, but
 		 * then we have to also handle crypto_decap() like above.
 		 */
-		if (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) {
+		if (IEEE80211_IS_PROTECTED(wh)) {
 			if (subtype != IEEE80211_FC0_SUBTYPE_AUTH) {
 				/*
 				 * Only shared key auth frames with a challenge
@@ -1561,7 +1569,10 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 				int ix = aid / NBBY;
 				int min = tim->tim_bitctl &~ 1;
 				int max = tim->tim_len + min - 4;
-				int tim_ucast = 0, tim_mcast = 0;
+				int tim_ucast = 0;
+#ifdef __notyet__
+				int tim_mcast = 0;
+#endif
 
 				/*
 				 * Only do this for unicast traffic in the TIM
@@ -1574,6 +1585,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 					tim_ucast = 1;
 				}
 
+#ifdef __notyet__
 				/*
 				 * Do a separate notification
 				 * for the multicast bit being set.
@@ -1581,6 +1593,7 @@ sta_recv_mgmt(struct ieee80211_node *ni, struct mbuf *m0, int subtype,
 				if (tim->tim_bitctl & 1) {
 					tim_mcast = 1;
 				}
+#endif
 
 				/*
 				 * If the TIM indicates there's traffic for

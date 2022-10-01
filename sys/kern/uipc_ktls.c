@@ -299,6 +299,7 @@ static MALLOC_DEFINE(M_KTLS, "ktls", "Kernel TLS");
 
 static void ktls_cleanup(struct ktls_session *tls);
 #if defined(INET) || defined(INET6)
+static void ktls_reset_receive_tag(void *context, int pending);
 static void ktls_reset_send_tag(void *context, int pending);
 #endif
 static void ktls_work_thread(void *ctx);
@@ -341,16 +342,15 @@ static int
 ktls_buffer_import(void *arg, void **store, int count, int domain, int flags)
 {
 	vm_page_t m;
-	int i;
+	int i, req;
 
 	KASSERT((ktls_maxlen & PAGE_MASK) == 0,
 	    ("%s: ktls max length %d is not page size-aligned",
 	    __func__, ktls_maxlen));
 
+	req = VM_ALLOC_WIRED | VM_ALLOC_NODUMP | malloc2vm_flags(flags);
 	for (i = 0; i < count; i++) {
-		m = vm_page_alloc_contig_domain(NULL, 0, domain,
-		    VM_ALLOC_NORMAL | VM_ALLOC_NOOBJ | VM_ALLOC_WIRED |
-		    VM_ALLOC_NODUMP | malloc2vm_flags(flags),
+		m = vm_page_alloc_noobj_contig_domain(domain, req,
 		    atop(ktls_maxlen), 0, ~0ul, PAGE_SIZE, 0,
 		    VM_MEMATTR_DEFAULT);
 		if (m == NULL)
@@ -504,7 +504,7 @@ start:
 #if defined(INET) || defined(INET6)
 static int
 ktls_create_session(struct socket *so, struct tls_enable *en,
-    struct ktls_session **tlsp)
+    struct ktls_session **tlsp, int direction)
 {
 	struct ktls_session *tls;
 	int error;
@@ -552,40 +552,51 @@ ktls_create_session(struct socket *so, struct tls_enable *en,
 		}
 		if (en->auth_key_len != 0)
 			return (EINVAL);
-		if ((en->tls_vminor == TLS_MINOR_VER_TWO &&
-			en->iv_len != TLS_AEAD_GCM_LEN) ||
-		    (en->tls_vminor == TLS_MINOR_VER_THREE &&
-			en->iv_len != TLS_1_3_GCM_IV_LEN))
+		switch (en->tls_vminor) {
+		case TLS_MINOR_VER_TWO:
+			if (en->iv_len != TLS_AEAD_GCM_LEN)
+				return (EINVAL);
+			break;
+		case TLS_MINOR_VER_THREE:
+			if (en->iv_len != TLS_1_3_GCM_IV_LEN)
+				return (EINVAL);
+			break;
+		default:
 			return (EINVAL);
+		}
 		break;
 	case CRYPTO_AES_CBC:
 		switch (en->auth_algorithm) {
 		case CRYPTO_SHA1_HMAC:
-			/*
-			 * TLS 1.0 requires an implicit IV.  TLS 1.1+
-			 * all use explicit IVs.
-			 */
-			if (en->tls_vminor == TLS_MINOR_VER_ZERO) {
-				if (en->iv_len != TLS_CBC_IMPLICIT_IV_LEN)
-					return (EINVAL);
-				break;
-			}
-
-			/* FALLTHROUGH */
+			break;
 		case CRYPTO_SHA2_256_HMAC:
 		case CRYPTO_SHA2_384_HMAC:
-			/* Ignore any supplied IV. */
-			en->iv_len = 0;
+			if (en->tls_vminor != TLS_MINOR_VER_TWO)
+				return (EINVAL);
 			break;
 		default:
 			return (EINVAL);
 		}
 		if (en->auth_key_len == 0)
 			return (EINVAL);
-		if (en->tls_vminor != TLS_MINOR_VER_ZERO &&
-		    en->tls_vminor != TLS_MINOR_VER_ONE &&
-		    en->tls_vminor != TLS_MINOR_VER_TWO)
+
+		/*
+		 * TLS 1.0 requires an implicit IV.  TLS 1.1 and 1.2
+		 * use explicit IVs.
+		 */
+		switch (en->tls_vminor) {
+		case TLS_MINOR_VER_ZERO:
+			if (en->iv_len != TLS_CBC_IMPLICIT_IV_LEN)
+				return (EINVAL);
+			break;
+		case TLS_MINOR_VER_ONE:
+		case TLS_MINOR_VER_TWO:
+			/* Ignore any supplied IV. */
+			en->iv_len = 0;
+			break;
+		default:
 			return (EINVAL);
+		}
 		break;
 	case CRYPTO_CHACHA20_POLY1305:
 		if (en->auth_algorithm != 0 || en->auth_key_len != 0)
@@ -609,7 +620,10 @@ ktls_create_session(struct socket *so, struct tls_enable *en,
 	counter_u64_add(ktls_offload_active, 1);
 
 	refcount_init(&tls->refcount, 1);
-	TASK_INIT(&tls->reset_tag_task, 0, ktls_reset_send_tag, tls);
+	if (direction == KTLS_RX)
+		TASK_INIT(&tls->reset_tag_task, 0, ktls_reset_receive_tag, tls);
+	else
+		TASK_INIT(&tls->reset_tag_task, 0, ktls_reset_send_tag, tls);
 
 	tls->wq_index = ktls_get_cpu(so);
 
@@ -735,7 +749,7 @@ out:
 }
 
 static struct ktls_session *
-ktls_clone_session(struct ktls_session *tls)
+ktls_clone_session(struct ktls_session *tls, int direction)
 {
 	struct ktls_session *tls_new;
 
@@ -744,7 +758,12 @@ ktls_clone_session(struct ktls_session *tls)
 	counter_u64_add(ktls_offload_active, 1);
 
 	refcount_init(&tls_new->refcount, 1);
-	TASK_INIT(&tls_new->reset_tag_task, 0, ktls_reset_send_tag, tls_new);
+	if (direction == KTLS_RX)
+		TASK_INIT(&tls_new->reset_tag_task, 0, ktls_reset_receive_tag,
+		    tls_new);
+	else
+		TASK_INIT(&tls_new->reset_tag_task, 0, ktls_reset_send_tag,
+		    tls_new);
 
 	/* Copy fields from existing session. */
 	tls_new->params = tls->params;
@@ -785,7 +804,6 @@ ktls_cleanup(struct ktls_session *tls)
 			counter_u64_add(ktls_sw_chacha20, -1);
 			break;
 		}
-		ktls_ocf_free(tls);
 		break;
 	case TCP_TLS_MODE_IFNET:
 		switch (tls->params.cipher_algorithm) {
@@ -801,6 +819,8 @@ ktls_cleanup(struct ktls_session *tls)
 		}
 		if (tls->snd_tag != NULL)
 			m_snd_tag_rele(tls->snd_tag);
+		if (tls->rx_ifp != NULL)
+			if_rele(tls->rx_ifp);
 		break;
 #ifdef TCP_OFFLOAD
 	case TCP_TLS_MODE_TOE:
@@ -818,6 +838,8 @@ ktls_cleanup(struct ktls_session *tls)
 		break;
 #endif
 	}
+	if (tls->ocf_session != NULL)
+		ktls_ocf_free(tls);
 	if (tls->params.auth_key != NULL) {
 		zfree(tls->params.auth_key, M_KTLS);
 		tls->params.auth_key = NULL;
@@ -843,10 +865,6 @@ ktls_try_toe(struct socket *so, struct ktls_session *tls, int direction)
 
 	inp = so->so_pcb;
 	INP_WLOCK(inp);
-	if (inp->inp_flags2 & INP_FREED) {
-		INP_WUNLOCK(inp);
-		return (ECONNRESET);
-	}
 	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
 		INP_WUNLOCK(inp);
 		return (ECONNRESET);
@@ -898,10 +916,6 @@ ktls_alloc_snd_tag(struct inpcb *inp, struct ktls_session *tls, bool force,
 	int error;
 
 	INP_RLOCK(inp);
-	if (inp->inp_flags2 & INP_FREED) {
-		INP_RUNLOCK(inp);
-		return (ECONNRESET);
-	}
 	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
 		INP_RUNLOCK(inp);
 		return (ECONNRESET);
@@ -980,39 +994,141 @@ out:
 	return (error);
 }
 
+/*
+ * Allocate an initial TLS receive tag for doing HW decryption of TLS
+ * data.
+ *
+ * This function allocates a new TLS receive tag on whatever interface
+ * the connection is currently routed over.  If the connection ends up
+ * using a different interface for receive this will get fixed up via
+ * ktls_input_ifp_mismatch as future packets arrive.
+ */
 static int
-ktls_try_ifnet(struct socket *so, struct ktls_session *tls, bool force)
+ktls_alloc_rcv_tag(struct inpcb *inp, struct ktls_session *tls,
+    struct m_snd_tag **mstp)
 {
-	struct m_snd_tag *mst;
+	union if_snd_tag_alloc_params params;
+	struct ifnet *ifp;
+	struct nhop_object *nh;
 	int error;
 
-	error = ktls_alloc_snd_tag(so->so_pcb, tls, force, &mst);
-	if (error == 0) {
-		tls->mode = TCP_TLS_MODE_IFNET;
-		tls->snd_tag = mst;
-		switch (tls->params.cipher_algorithm) {
-		case CRYPTO_AES_CBC:
-			counter_u64_add(ktls_ifnet_cbc, 1);
-			break;
-		case CRYPTO_AES_NIST_GCM_16:
-			counter_u64_add(ktls_ifnet_gcm, 1);
-			break;
-		case CRYPTO_CHACHA20_POLY1305:
-			counter_u64_add(ktls_ifnet_chacha20, 1);
-			break;
+	if (!ktls_ocf_recrypt_supported(tls))
+		return (ENXIO);
+
+	INP_RLOCK(inp);
+	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+		INP_RUNLOCK(inp);
+		return (ECONNRESET);
+	}
+	if (inp->inp_socket == NULL) {
+		INP_RUNLOCK(inp);
+		return (ECONNRESET);
+	}
+
+	/*
+	 * Check administrative controls on ifnet TLS to determine if
+	 * ifnet TLS should be denied.
+	 */
+	if (ktls_ifnet_permitted == 0) {
+		INP_RUNLOCK(inp);
+		return (ENXIO);
+	}
+
+	/*
+	 * XXX: As with ktls_alloc_snd_tag, use the cached route in
+	 * the inpcb to find the interface.
+	 */
+	nh = inp->inp_route.ro_nh;
+	if (nh == NULL) {
+		INP_RUNLOCK(inp);
+		return (ENXIO);
+	}
+	ifp = nh->nh_ifp;
+	if_ref(ifp);
+	tls->rx_ifp = ifp;
+
+	params.hdr.type = IF_SND_TAG_TYPE_TLS_RX;
+	params.hdr.flowid = inp->inp_flowid;
+	params.hdr.flowtype = inp->inp_flowtype;
+	params.hdr.numa_domain = inp->inp_numa_domain;
+	params.tls_rx.inp = inp;
+	params.tls_rx.tls = tls;
+	params.tls_rx.vlan_id = 0;
+
+	INP_RUNLOCK(inp);
+
+	if (inp->inp_vflag & INP_IPV6) {
+		if ((ifp->if_capenable2 & IFCAP2_RXTLS6) == 0) {
+			error = EOPNOTSUPP;
+			goto out;
+		}
+	} else {
+		if ((ifp->if_capenable2 & IFCAP2_RXTLS4) == 0) {
+			error = EOPNOTSUPP;
+			goto out;
 		}
 	}
+	error = m_snd_tag_alloc(ifp, &params, mstp);
+
+	/*
+	 * If this connection is over a vlan, vlan_snd_tag_alloc
+	 * rewrites vlan_id with the saved interface.  Save the VLAN
+	 * ID for use in ktls_reset_receive_tag which allocates new
+	 * receive tags directly from the leaf interface bypassing
+	 * if_vlan.
+	 */
+	if (error == 0)
+		tls->rx_vlan_id = params.tls_rx.vlan_id;
+out:
 	return (error);
 }
 
 static int
-ktls_try_sw(struct socket *so, struct ktls_session *tls, int direction)
+ktls_try_ifnet(struct socket *so, struct ktls_session *tls, int direction,
+    bool force)
 {
+	struct m_snd_tag *mst;
 	int error;
 
-	error = ktls_ocf_try(so, tls, direction);
-	if (error)
-		return (error);
+	switch (direction) {
+	case KTLS_TX:
+		error = ktls_alloc_snd_tag(so->so_pcb, tls, force, &mst);
+		if (__predict_false(error != 0))
+			goto done;
+		break;
+	case KTLS_RX:
+		KASSERT(!force, ("%s: forced receive tag", __func__));
+		error = ktls_alloc_rcv_tag(so->so_pcb, tls, &mst);
+		if (__predict_false(error != 0))
+			goto done;
+		break;
+	default:
+		__assert_unreachable();
+	}
+
+	tls->mode = TCP_TLS_MODE_IFNET;
+	tls->snd_tag = mst;
+
+	switch (tls->params.cipher_algorithm) {
+	case CRYPTO_AES_CBC:
+		counter_u64_add(ktls_ifnet_cbc, 1);
+		break;
+	case CRYPTO_AES_NIST_GCM_16:
+		counter_u64_add(ktls_ifnet_gcm, 1);
+		break;
+	case CRYPTO_CHACHA20_POLY1305:
+		counter_u64_add(ktls_ifnet_chacha20, 1);
+		break;
+	default:
+		break;
+	}
+done:
+	return (error);
+}
+
+static void
+ktls_use_sw(struct ktls_session *tls)
+{
 	tls->mode = TCP_TLS_MODE_SW;
 	switch (tls->params.cipher_algorithm) {
 	case CRYPTO_AES_CBC:
@@ -1025,6 +1141,17 @@ ktls_try_sw(struct socket *so, struct ktls_session *tls, int direction)
 		counter_u64_add(ktls_sw_chacha20, 1);
 		break;
 	}
+}
+
+static int
+ktls_try_sw(struct socket *so, struct ktls_session *tls, int direction)
+{
+	int error;
+
+	error = ktls_ocf_try(so, tls, direction);
+	if (error)
+		return (error);
+	ktls_use_sw(tls);
 	return (0);
 }
 
@@ -1083,6 +1210,69 @@ sb_mark_notready(struct sockbuf *sb)
 	    sb->sb_ccc));
 }
 
+/*
+ * Return information about the pending TLS data in a socket
+ * buffer.  On return, 'seqno' is set to the sequence number
+ * of the next TLS record to be received, 'resid' is set to
+ * the amount of bytes still needed for the last pending
+ * record.  The function returns 'false' if the last pending
+ * record contains a partial TLS header.  In that case, 'resid'
+ * is the number of bytes needed to complete the TLS header.
+ */
+bool
+ktls_pending_rx_info(struct sockbuf *sb, uint64_t *seqnop, size_t *residp)
+{
+	struct tls_record_layer hdr;
+	struct mbuf *m;
+	uint64_t seqno;
+	size_t resid;
+	u_int offset, record_len;
+
+	SOCKBUF_LOCK_ASSERT(sb);
+	MPASS(sb->sb_flags & SB_TLS_RX);
+	seqno = sb->sb_tls_seqno;
+	resid = sb->sb_tlscc;
+	m = sb->sb_mtls;
+	offset = 0;
+
+	if (resid == 0) {
+		*seqnop = seqno;
+		*residp = 0;
+		return (true);
+	}
+
+	for (;;) {
+		seqno++;
+
+		if (resid < sizeof(hdr)) {
+			*seqnop = seqno;
+			*residp = sizeof(hdr) - resid;
+			return (false);
+		}
+
+		m_copydata(m, offset, sizeof(hdr), (void *)&hdr);
+
+		record_len = sizeof(hdr) + ntohs(hdr.tls_length);
+		if (resid <= record_len) {
+			*seqnop = seqno;
+			*residp = record_len - resid;
+			return (true);
+		}
+		resid -= record_len;
+
+		while (record_len != 0) {
+			if (m->m_len - offset > record_len) {
+				offset += record_len;
+				break;
+			}
+
+			record_len -= (m->m_len - offset);
+			offset = 0;
+			m = m->m_next;
+		}
+	}
+}
+
 int
 ktls_enable_rx(struct socket *so, struct tls_enable *en)
 {
@@ -1113,21 +1303,11 @@ ktls_enable_rx(struct socket *so, struct tls_enable *en)
 	if (en->cipher_algorithm == CRYPTO_AES_CBC && !ktls_cbc_enable)
 		return (ENOTSUP);
 
-	/* TLS 1.3 is not yet supported. */
-	if (en->tls_vmajor == TLS_MAJOR_VER_ONE &&
-	    en->tls_vminor == TLS_MINOR_VER_THREE)
-		return (ENOTSUP);
-
-	error = ktls_create_session(so, en, &tls);
+	error = ktls_create_session(so, en, &tls, KTLS_RX);
 	if (error)
 		return (error);
 
-#ifdef TCP_OFFLOAD
-	error = ktls_try_toe(so, tls, KTLS_RX);
-	if (error)
-#endif
-		error = ktls_try_sw(so, tls, KTLS_RX);
-
+	error = ktls_ocf_try(so, tls, KTLS_RX);
 	if (error) {
 		ktls_cleanup(tls);
 		return (error);
@@ -1140,11 +1320,18 @@ ktls_enable_rx(struct socket *so, struct tls_enable *en)
 	so->so_rcv.sb_flags |= SB_TLS_RX;
 
 	/* Mark existing data as not ready until it can be decrypted. */
-	if (tls->mode != TCP_TLS_MODE_TOE) {
-		sb_mark_notready(&so->so_rcv);
-		ktls_check_rx(&so->so_rcv);
-	}
+	sb_mark_notready(&so->so_rcv);
+	ktls_check_rx(&so->so_rcv);
 	SOCKBUF_UNLOCK(&so->so_rcv);
+
+	/* Prefer TOE -> ifnet TLS -> software TLS. */
+#ifdef TCP_OFFLOAD
+	error = ktls_try_toe(so, tls, KTLS_RX);
+	if (error)
+#endif
+		error = ktls_try_ifnet(so, tls, KTLS_RX, false);
+	if (error)
+		ktls_use_sw(tls);
 
 	counter_u64_add(ktls_offload_total, 1);
 
@@ -1186,7 +1373,7 @@ ktls_enable_tx(struct socket *so, struct tls_enable *en)
 	if (mb_use_ext_pgs == 0)
 		return (ENXIO);
 
-	error = ktls_create_session(so, en, &tls);
+	error = ktls_create_session(so, en, &tls, KTLS_TX);
 	if (error)
 		return (error);
 
@@ -1195,7 +1382,7 @@ ktls_enable_tx(struct socket *so, struct tls_enable *en)
 	error = ktls_try_toe(so, tls, KTLS_TX);
 	if (error)
 #endif
-		error = ktls_try_ifnet(so, tls, false);
+		error = ktls_try_ifnet(so, tls, KTLS_TX, false);
 	if (error)
 		error = ktls_try_sw(so, tls, KTLS_TX);
 
@@ -1235,7 +1422,7 @@ int
 ktls_get_rx_mode(struct socket *so, int *modep)
 {
 	struct ktls_session *tls;
-	struct inpcb *inp;
+	struct inpcb *inp __diagused;
 
 	if (SOLISTENING(so))
 		return (EINVAL);
@@ -1251,11 +1438,54 @@ ktls_get_rx_mode(struct socket *so, int *modep)
 	return (0);
 }
 
+/*
+ * ktls_get_rx_sequence - get the next TCP- and TLS- sequence number.
+ *
+ * This function gets information about the next TCP- and TLS-
+ * sequence number to be processed by the TLS receive worker
+ * thread. The information is extracted from the given "inpcb"
+ * structure. The values are stored in host endian format at the two
+ * given output pointer locations. The TCP sequence number points to
+ * the beginning of the TLS header.
+ *
+ * This function returns zero on success, else a non-zero error code
+ * is returned.
+ */
+int
+ktls_get_rx_sequence(struct inpcb *inp, uint32_t *tcpseq, uint64_t *tlsseq)
+{
+	struct socket *so;
+	struct tcpcb *tp;
+
+	INP_RLOCK(inp);
+	so = inp->inp_socket;
+	if (__predict_false(so == NULL)) {
+		INP_RUNLOCK(inp);
+		return (EINVAL);
+	}
+	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+		INP_RUNLOCK(inp);
+		return (ECONNRESET);
+	}
+
+	tp = intotcpcb(inp);
+	MPASS(tp != NULL);
+
+	SOCKBUF_LOCK(&so->so_rcv);
+	*tcpseq = tp->rcv_nxt - so->so_rcv.sb_tlscc;
+	*tlsseq = so->so_rcv.sb_tls_seqno;
+	SOCKBUF_UNLOCK(&so->so_rcv);
+
+	INP_RUNLOCK(inp);
+
+	return (0);
+}
+
 int
 ktls_get_tx_mode(struct socket *so, int *modep)
 {
 	struct ktls_session *tls;
-	struct inpcb *inp;
+	struct inpcb *inp __diagused;
 
 	if (SOLISTENING(so))
 		return (EINVAL);
@@ -1309,10 +1539,10 @@ ktls_set_tx_mode(struct socket *so, int mode)
 	SOCKBUF_UNLOCK(&so->so_snd);
 	INP_WUNLOCK(inp);
 
-	tls_new = ktls_clone_session(tls);
+	tls_new = ktls_clone_session(tls, KTLS_TX);
 
 	if (mode == TCP_TLS_MODE_IFNET)
-		error = ktls_try_ifnet(so, tls_new, true);
+		error = ktls_try_ifnet(so, tls_new, KTLS_TX, true);
 	else
 		error = ktls_try_sw(so, tls_new, KTLS_TX);
 	if (error) {
@@ -1345,6 +1575,7 @@ ktls_set_tx_mode(struct socket *so, int mode)
 		return (EBUSY);
 	}
 
+	INP_WLOCK(inp);
 	SOCKBUF_LOCK(&so->so_snd);
 	so->so_snd.sb_tls_info = tls_new;
 	if (tls_new->mode != TCP_TLS_MODE_SW)
@@ -1366,8 +1597,92 @@ ktls_set_tx_mode(struct socket *so, int mode)
 	else
 		counter_u64_add(ktls_switch_to_sw, 1);
 
-	INP_WLOCK(inp);
 	return (0);
+}
+
+/*
+ * Try to allocate a new TLS receive tag.  This task is scheduled when
+ * sbappend_ktls_rx detects an input path change.  If a new tag is
+ * allocated, replace the tag in the TLS session.  If a new tag cannot
+ * be allocated, let the session fall back to software decryption.
+ */
+static void
+ktls_reset_receive_tag(void *context, int pending)
+{
+	union if_snd_tag_alloc_params params;
+	struct ktls_session *tls;
+	struct m_snd_tag *mst;
+	struct inpcb *inp;
+	struct ifnet *ifp;
+	struct socket *so;
+	int error;
+
+	MPASS(pending == 1);
+
+	tls = context;
+	so = tls->so;
+	inp = so->so_pcb;
+	ifp = NULL;
+
+	INP_RLOCK(inp);
+	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+		INP_RUNLOCK(inp);
+		goto out;
+	}
+
+	SOCKBUF_LOCK(&so->so_rcv);
+	mst = tls->snd_tag;
+	tls->snd_tag = NULL;
+	if (mst != NULL)
+		m_snd_tag_rele(mst);
+
+	ifp = tls->rx_ifp;
+	if_ref(ifp);
+	SOCKBUF_UNLOCK(&so->so_rcv);
+
+	params.hdr.type = IF_SND_TAG_TYPE_TLS_RX;
+	params.hdr.flowid = inp->inp_flowid;
+	params.hdr.flowtype = inp->inp_flowtype;
+	params.hdr.numa_domain = inp->inp_numa_domain;
+	params.tls_rx.inp = inp;
+	params.tls_rx.tls = tls;
+	params.tls_rx.vlan_id = tls->rx_vlan_id;
+	INP_RUNLOCK(inp);
+
+	if (inp->inp_vflag & INP_IPV6) {
+		if ((ifp->if_capenable2 & IFCAP2_RXTLS6) == 0)
+			goto out;
+	} else {
+		if ((ifp->if_capenable2 & IFCAP2_RXTLS4) == 0)
+			goto out;
+	}
+
+	error = m_snd_tag_alloc(ifp, &params, &mst);
+	if (error == 0) {
+		SOCKBUF_LOCK(&so->so_rcv);
+		tls->snd_tag = mst;
+		SOCKBUF_UNLOCK(&so->so_rcv);
+
+		counter_u64_add(ktls_ifnet_reset, 1);
+	} else {
+		/*
+		 * Just fall back to software decryption if a tag
+		 * cannot be allocated leaving the connection intact.
+		 * If a future input path change switches to another
+		 * interface this connection will resume ifnet TLS.
+		 */
+		counter_u64_add(ktls_ifnet_reset_failed, 1);
+	}
+
+out:
+	mtx_pool_lock(mtxpool_sleep, tls);
+	tls->reset_pending = false;
+	mtx_pool_unlock(mtxpool_sleep, tls);
+
+	if (ifp != NULL)
+		if_rele(ifp);
+	sorele(so);
+	ktls_free(tls);
 }
 
 /*
@@ -1456,6 +1771,37 @@ ktls_reset_send_tag(void *context, int pending)
 	ktls_free(tls);
 }
 
+void
+ktls_input_ifp_mismatch(struct sockbuf *sb, struct ifnet *ifp)
+{
+	struct ktls_session *tls;
+	struct socket *so;
+
+	SOCKBUF_LOCK_ASSERT(sb);
+	KASSERT(sb->sb_flags & SB_TLS_RX, ("%s: sockbuf %p isn't TLS RX",
+	    __func__, sb));
+	so = __containerof(sb, struct socket, so_rcv);
+
+	tls = sb->sb_tls_info;
+	if_rele(tls->rx_ifp);
+	if_ref(ifp);
+	tls->rx_ifp = ifp;
+
+	/*
+	 * See if we should schedule a task to update the receive tag for
+	 * this session.
+	 */
+	mtx_pool_lock(mtxpool_sleep, tls);
+	if (!tls->reset_pending) {
+		(void) ktls_hold(tls);
+		soref(so);
+		tls->so = so;
+		tls->reset_pending = true;
+		taskqueue_enqueue(taskqueue_thread, &tls->reset_tag_task);
+	}
+	mtx_pool_unlock(mtxpool_sleep, tls);
+}
+
 int
 ktls_output_eagain(struct inpcb *inp, struct ktls_session *tls)
 {
@@ -1506,10 +1852,11 @@ ktls_modify_txrtlmt(struct ktls_session *tls, uint64_t max_pacing_rate)
 		return (0);
 	}
 
-	MPASS(tls->snd_tag != NULL);
-	MPASS(tls->snd_tag->sw->type == IF_SND_TAG_TYPE_TLS_RATE_LIMIT);
-
 	mst = tls->snd_tag;
+
+	MPASS(mst != NULL);
+	MPASS(mst->sw->type == IF_SND_TAG_TYPE_TLS_RATE_LIMIT);
+
 	return (mst->sw->snd_tag_modify(mst, &params));
 }
 #endif
@@ -1573,7 +1920,7 @@ ktls_frame(struct mbuf *top, struct ktls_session *tls, int *enq_cnt,
 	struct mbuf *m;
 	uint64_t *noncep;
 	uint16_t tls_len;
-	int maxlen;
+	int maxlen __diagused;
 
 	maxlen = tls->params.max_frame_len;
 	*enq_cnt = 0;
@@ -1582,19 +1929,18 @@ ktls_frame(struct mbuf *top, struct ktls_session *tls, int *enq_cnt,
 		 * All mbufs in the chain should be TLS records whose
 		 * payload does not exceed the maximum frame length.
 		 *
-		 * Empty TLS records are permitted when using CBC.
+		 * Empty TLS 1.0 records are permitted when using CBC.
 		 */
-		KASSERT(m->m_len <= maxlen &&
-		    (tls->params.cipher_algorithm == CRYPTO_AES_CBC ?
-		    m->m_len >= 0 : m->m_len > 0),
-		    ("ktls_frame: m %p len %d\n", m, m->m_len));
+		KASSERT(m->m_len <= maxlen && m->m_len >= 0 &&
+		    (m->m_len > 0 || ktls_permit_empty_frames(tls)),
+		    ("ktls_frame: m %p len %d", m, m->m_len));
 
 		/*
 		 * TLS frames require unmapped mbufs to store session
 		 * info.
 		 */
 		KASSERT((m->m_flags & M_EXTPG) != 0,
-		    ("ktls_frame: mapped mbuf %p (top = %p)\n", m, top));
+		    ("ktls_frame: mapped mbuf %p (top = %p)", m, top));
 
 		tls_len = m->m_len;
 
@@ -1686,6 +2032,13 @@ ktls_frame(struct mbuf *top, struct ktls_session *tls, int *enq_cnt,
 			*enq_cnt += m->m_epg_nrdy;
 		}
 	}
+}
+
+bool
+ktls_permit_empty_frames(struct ktls_session *tls)
+{
+	return (tls->params.cipher_algorithm == CRYPTO_AES_CBC &&
+	    tls->params.tls_vminor == TLS_MINOR_VER_ZERO);
 }
 
 void
@@ -1792,7 +2145,7 @@ ktls_detach_record(struct sockbuf *sb, int len)
 			return (NULL);
 		}
 	}
-	n->m_flags |= M_NOTREADY;
+	n->m_flags |= (m->m_flags & (M_NOTREADY | M_DECRYPTED));
 
 	/* Store remainder in 'n'. */
 	n->m_len = m->m_len - remain;
@@ -1830,6 +2183,133 @@ out:
 	return (top);
 }
 
+/*
+ * Determine the length of the trailing zero padding and find the real
+ * record type in the byte before the padding.
+ *
+ * Walking the mbuf chain backwards is clumsy, so another option would
+ * be to scan forwards remembering the last non-zero byte before the
+ * trailer.  However, it would be expensive to scan the entire record.
+ * Instead, find the last non-zero byte of each mbuf in the chain
+ * keeping track of the relative offset of that nonzero byte.
+ *
+ * trail_len is the size of the MAC/tag on input and is set to the
+ * size of the full trailer including padding and the record type on
+ * return.
+ */
+static int
+tls13_find_record_type(struct ktls_session *tls, struct mbuf *m, int tls_len,
+    int *trailer_len, uint8_t *record_typep)
+{
+	char *cp;
+	u_int digest_start, last_offset, m_len, offset;
+	uint8_t record_type;
+
+	digest_start = tls_len - *trailer_len;
+	last_offset = 0;
+	offset = 0;
+	for (; m != NULL && offset < digest_start;
+	     offset += m->m_len, m = m->m_next) {
+		/* Don't look for padding in the tag. */
+		m_len = min(digest_start - offset, m->m_len);
+		cp = mtod(m, char *);
+
+		/* Find last non-zero byte in this mbuf. */
+		while (m_len > 0 && cp[m_len - 1] == 0)
+			m_len--;
+		if (m_len > 0) {
+			record_type = cp[m_len - 1];
+			last_offset = offset + m_len;
+		}
+	}
+	if (last_offset < tls->params.tls_hlen)
+		return (EBADMSG);
+
+	*record_typep = record_type;
+	*trailer_len = tls_len - last_offset + 1;
+	return (0);
+}
+
+/*
+ * Check if a mbuf chain is fully decrypted at the given offset and
+ * length. Returns KTLS_MBUF_CRYPTO_ST_DECRYPTED if all data is
+ * decrypted. KTLS_MBUF_CRYPTO_ST_MIXED if there is a mix of encrypted
+ * and decrypted data. Else KTLS_MBUF_CRYPTO_ST_ENCRYPTED if all data
+ * is encrypted.
+ */
+ktls_mbuf_crypto_st_t
+ktls_mbuf_crypto_state(struct mbuf *mb, int offset, int len)
+{
+	int m_flags_ored = 0;
+	int m_flags_anded = -1;
+
+	for (; mb != NULL; mb = mb->m_next) {
+		if (offset < mb->m_len)
+			break;
+		offset -= mb->m_len;
+	}
+	offset += len;
+
+	for (; mb != NULL; mb = mb->m_next) {
+		m_flags_ored |= mb->m_flags;
+		m_flags_anded &= mb->m_flags;
+
+		if (offset <= mb->m_len)
+			break;
+		offset -= mb->m_len;
+	}
+	MPASS(mb != NULL || offset == 0);
+
+	if ((m_flags_ored ^ m_flags_anded) & M_DECRYPTED)
+		return (KTLS_MBUF_CRYPTO_ST_MIXED);
+	else
+		return ((m_flags_ored & M_DECRYPTED) ?
+		    KTLS_MBUF_CRYPTO_ST_DECRYPTED :
+		    KTLS_MBUF_CRYPTO_ST_ENCRYPTED);
+}
+
+/*
+ * ktls_resync_ifnet - get HW TLS RX back on track after packet loss
+ */
+static int
+ktls_resync_ifnet(struct socket *so, uint32_t tls_len, uint64_t tls_rcd_num)
+{
+	union if_snd_tag_modify_params params;
+	struct m_snd_tag *mst;
+	struct inpcb *inp;
+	struct tcpcb *tp;
+
+	mst = so->so_rcv.sb_tls_info->snd_tag;
+	if (__predict_false(mst == NULL))
+		return (EINVAL);
+
+	inp = sotoinpcb(so);
+	if (__predict_false(inp == NULL))
+		return (EINVAL);
+
+	INP_RLOCK(inp);
+	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+		INP_RUNLOCK(inp);
+		return (ECONNRESET);
+	}
+
+	tp = intotcpcb(inp);
+	MPASS(tp != NULL);
+
+	/* Get the TCP sequence number of the next valid TLS header. */
+	SOCKBUF_LOCK(&so->so_rcv);
+	params.tls_rx.tls_hdr_tcp_sn =
+	    tp->rcv_nxt - so->so_rcv.sb_tlscc - tls_len;
+	params.tls_rx.tls_rec_length = tls_len;
+	params.tls_rx.tls_seq_number = tls_rcd_num;
+	SOCKBUF_UNLOCK(&so->so_rcv);
+
+	INP_RUNLOCK(inp);
+
+	MPASS(mst->sw->type == IF_SND_TAG_TYPE_TLS_RX);
+	return (mst->sw->snd_tag_modify(mst, &params));
+}
+
 static void
 ktls_decrypt(struct socket *so)
 {
@@ -1839,8 +2319,11 @@ ktls_decrypt(struct socket *so)
 	struct tls_record_layer *hdr;
 	struct tls_get_record tgr;
 	struct mbuf *control, *data, *m;
+	ktls_mbuf_crypto_st_t state;
 	uint64_t seqno;
 	int error, remain, tls_len, trail_len;
+	bool tls13;
+	uint8_t vminor, record_type;
 
 	hdr = (struct tls_record_layer *)tls_header;
 	sb = &so->so_rcv;
@@ -1851,6 +2334,11 @@ ktls_decrypt(struct socket *so)
 	tls = sb->sb_tls_info;
 	MPASS(tls != NULL);
 
+	tls13 = (tls->params.tls_vminor == TLS_MINOR_VER_THREE);
+	if (tls13)
+		vminor = TLS_MINOR_VER_TWO;
+	else
+		vminor = tls->params.tls_vminor;
 	for (;;) {
 		/* Is there enough queued for a TLS header? */
 		if (sb->sb_tlscc < tls->params.tls_hlen)
@@ -1860,7 +2348,9 @@ ktls_decrypt(struct socket *so)
 		tls_len = sizeof(*hdr) + ntohs(hdr->tls_length);
 
 		if (hdr->tls_vmajor != tls->params.tls_vmajor ||
-		    hdr->tls_vminor != tls->params.tls_vminor)
+		    hdr->tls_vminor != vminor)
+			error = EINVAL;
+		else if (tls13 && hdr->tls_type != TLS_RLTYPE_APP)
 			error = EINVAL;
 		else if (tls_len < tls->params.tls_hlen || tls_len >
 		    tls->params.tls_hlen + TLS_MAX_MSG_SIZE_V10_2 +
@@ -1878,7 +2368,7 @@ ktls_decrypt(struct socket *so)
 			counter_u64_add(ktls_offload_corrupted_records, 1);
 
 			CURVNET_SET(so->so_vnet);
-			so->so_proto->pr_usrreqs->pru_abort(so);
+			so->so_proto->pr_abort(so);
 			so->so_error = error;
 			CURVNET_RESTORE();
 			goto deref;
@@ -1902,7 +2392,47 @@ ktls_decrypt(struct socket *so)
 		SBCHECK(sb);
 		SOCKBUF_UNLOCK(sb);
 
-		error = tls->sw_decrypt(tls, hdr, data, seqno, &trail_len);
+		/* get crypto state for this TLS record */
+		state = ktls_mbuf_crypto_state(data, 0, tls_len);
+
+		switch (state) {
+		case KTLS_MBUF_CRYPTO_ST_MIXED:
+			error = ktls_ocf_recrypt(tls, hdr, data, seqno);
+			if (error)
+				break;
+			/* FALLTHROUGH */
+		case KTLS_MBUF_CRYPTO_ST_ENCRYPTED:
+			error = ktls_ocf_decrypt(tls, hdr, data, seqno,
+			    &trail_len);
+			if (__predict_true(error == 0)) {
+				if (tls13) {
+					error = tls13_find_record_type(tls, data,
+					    tls_len, &trail_len, &record_type);
+				} else {
+					record_type = hdr->tls_type;
+				}
+			}
+			break;
+		case KTLS_MBUF_CRYPTO_ST_DECRYPTED:
+			/*
+			 * NIC TLS is only supported for AEAD
+			 * ciphersuites which used a fixed sized
+			 * trailer.
+			 */
+			if (tls13) {
+				trail_len = tls->params.tls_tlen - 1;
+				error = tls13_find_record_type(tls, data,
+				    tls_len, &trail_len, &record_type);
+			} else {
+				trail_len = tls->params.tls_tlen;
+				error = 0;
+				record_type = hdr->tls_type;
+			}
+			break;
+		default:
+			error = EINVAL;
+			break;
+		}
 		if (error) {
 			counter_u64_add(ktls_offload_failed_crypto, 1);
 
@@ -1935,12 +2465,13 @@ ktls_decrypt(struct socket *so)
 		}
 
 		/* Allocate the control mbuf. */
-		tgr.tls_type = hdr->tls_type;
+		memset(&tgr, 0, sizeof(tgr));
+		tgr.tls_type = record_type;
 		tgr.tls_vmajor = hdr->tls_vmajor;
 		tgr.tls_vminor = hdr->tls_vminor;
 		tgr.tls_length = htobe16(tls_len - tls->params.tls_hlen -
 		    trail_len);
-		control = sbcreatecontrol_how(&tgr, sizeof(tgr),
+		control = sbcreatecontrol(&tgr, sizeof(tgr),
 		    TLS_GET_RECORD, IPPROTO_TCP, M_WAITOK);
 
 		SOCKBUF_LOCK(sb);
@@ -1981,19 +2512,31 @@ ktls_decrypt(struct socket *so)
 			remain = be16toh(tgr.tls_length);
 			m = data;
 			for (m = data; remain > m->m_len; m = m->m_next) {
-				m->m_flags &= ~M_NOTREADY;
+				m->m_flags &= ~(M_NOTREADY | M_DECRYPTED);
 				remain -= m->m_len;
 			}
 			m->m_len = remain;
 			m_freem(m->m_next);
 			m->m_next = NULL;
-			m->m_flags &= ~M_NOTREADY;
+			m->m_flags &= ~(M_NOTREADY | M_DECRYPTED);
 
 			/* Set EOR on the final mbuf. */
 			m->m_flags |= M_EOR;
 		}
 
 		sbappendcontrol_locked(sb, data, control, 0);
+
+		if (__predict_false(state != KTLS_MBUF_CRYPTO_ST_DECRYPTED)) {
+			sb->sb_flags |= SB_TLS_RX_RESYNC;
+			SOCKBUF_UNLOCK(sb);
+			ktls_resync_ifnet(so, tls_len, seqno);
+			SOCKBUF_LOCK(sb);
+		} else if (__predict_false(sb->sb_flags & SB_TLS_RX_RESYNC)) {
+			sb->sb_flags &= ~SB_TLS_RX_RESYNC;
+			SOCKBUF_UNLOCK(sb);
+			ktls_resync_ifnet(so, 0, seqno);
+			SOCKBUF_LOCK(sb);
+		}
 	}
 
 	sb->sb_flags &= ~SB_TLS_RX_RUNNING;
@@ -2007,7 +2550,6 @@ deref:
 	SOCKBUF_UNLOCK_ASSERT(sb);
 
 	CURVNET_SET(so->so_vnet);
-	SOCK_LOCK(so);
 	sorele(so);
 	CURVNET_RESTORE();
 }
@@ -2084,7 +2626,7 @@ ktls_encrypt_record(struct ktls_wq *wq, struct mbuf *m,
 
 	/* Anonymous mbufs are encrypted in place. */
 	if ((m->m_epg_flags & EPG_FLAG_ANON) != 0)
-		return (tls->sw_encrypt(state, tls, m, NULL, 0));
+		return (ktls_ocf_encrypt(state, tls, m, NULL, 0));
 
 	/*
 	 * For file-backed mbufs (from sendfile), anonymous wired
@@ -2101,12 +2643,8 @@ ktls_encrypt_record(struct ktls_wq *wq, struct mbuf *m,
 	} else {
 		off = m->m_epg_1st_off;
 		for (i = 0; i < m->m_epg_npgs; i++, off = 0) {
-			do {
-				pg = vm_page_alloc(NULL, 0, VM_ALLOC_NORMAL |
-				    VM_ALLOC_NOOBJ | VM_ALLOC_NODUMP |
-				    VM_ALLOC_WIRED | VM_ALLOC_WAITFAIL);
-			} while (pg == NULL);
-
+			pg = vm_page_alloc_noobj(VM_ALLOC_NODUMP |
+			    VM_ALLOC_WIRED | VM_ALLOC_WAITOK);
 			len = m_epg_pagelen(m, i, off);
 			state->parray[i] = VM_PAGE_TO_PHYS(pg);
 			state->dst_iov[i].iov_base =
@@ -2118,7 +2656,7 @@ ktls_encrypt_record(struct ktls_wq *wq, struct mbuf *m,
 	state->dst_iov[i].iov_base = m->m_epg_trail;
 	state->dst_iov[i].iov_len = m->m_epg_trllen;
 
-	error = tls->sw_encrypt(state, tls, m, state->dst_iov, i + 1);
+	error = ktls_ocf_encrypt(state, tls, m, state->dst_iov, i + 1);
 
 	if (__predict_false(error != 0)) {
 		/* Free the anonymous pages. */
@@ -2354,14 +2892,13 @@ ktls_encrypt(struct ktls_wq *wq, struct mbuf *top)
 
 	CURVNET_SET(so->so_vnet);
 	if (error == 0) {
-		(void)(*so->so_proto->pr_usrreqs->pru_ready)(so, top, npages);
+		(void)so->so_proto->pr_ready(so, top, npages);
 	} else {
-		so->so_proto->pr_usrreqs->pru_abort(so);
+		so->so_proto->pr_abort(so);
 		so->so_error = EIO;
 		mb_free_notready(top, total_pages);
 	}
 
-	SOCK_LOCK(so);
 	sorele(so);
 	CURVNET_RESTORE();
 }
@@ -2399,14 +2936,13 @@ ktls_encrypt_cb(struct ktls_ocf_encrypt_state *state, int error)
 	npages = m->m_epg_nrdy;
 
 	if (error == 0) {
-		(void)(*so->so_proto->pr_usrreqs->pru_ready)(so, m, npages);
+		(void)so->so_proto->pr_ready(so, m, npages);
 	} else {
-		so->so_proto->pr_usrreqs->pru_abort(so);
+		so->so_proto->pr_abort(so);
 		so->so_error = EIO;
 		mb_free_notready(m, npages);
 	}
 
-	SOCK_LOCK(so);
 	sorele(so);
 	CURVNET_RESTORE();
 }
@@ -2457,7 +2993,6 @@ ktls_encrypt_async(struct ktls_wq *wq, struct mbuf *top)
 			counter_u64_add(ktls_offload_failed_crypto, 1);
 			free(state, M_KTLS);
 			CURVNET_SET(so->so_vnet);
-			SOCK_LOCK(so);
 			sorele(so);
 			CURVNET_RESTORE();
 			break;
@@ -2468,12 +3003,11 @@ ktls_encrypt_async(struct ktls_wq *wq, struct mbuf *top)
 
 	CURVNET_SET(so->so_vnet);
 	if (error != 0) {
-		so->so_proto->pr_usrreqs->pru_abort(so);
+		so->so_proto->pr_abort(so);
 		so->so_error = EIO;
 		mb_free_notready(m, total_pages - npages);
 	}
 
-	SOCK_LOCK(so);
 	sorele(so);
 	CURVNET_RESTORE();
 }
@@ -2644,8 +3178,7 @@ ktls_disable_ifnet_help(void *context, int pending __unused)
 	INP_WLOCK(inp);
 	so = inp->inp_socket;
 	MPASS(so != NULL);
-	if ((inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) ||
-	    (inp->inp_flags2 & INP_FREED)) {
+	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
 		goto out;
 	}
 
@@ -2657,7 +3190,6 @@ ktls_disable_ifnet_help(void *context, int pending __unused)
 		counter_u64_add(ktls_ifnet_disable_ok, 1);
 		/* ktls_set_tx_mode() drops inp wlock, so recheck flags */
 		if ((inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) == 0 &&
-		    (inp->inp_flags2 & INP_FREED) == 0 &&
 		    (tp = intotcpcb(inp)) != NULL &&
 		    tp->t_fb->tfb_hwtls_change != NULL)
 			(*tp->t_fb->tfb_hwtls_change)(tp, 0);
@@ -2666,7 +3198,6 @@ ktls_disable_ifnet_help(void *context, int pending __unused)
 	}
 
 out:
-	SOCK_LOCK(so);
 	sorele(so);
 	if (!in_pcbrele_wlocked(inp))
 		INP_WUNLOCK(inp);

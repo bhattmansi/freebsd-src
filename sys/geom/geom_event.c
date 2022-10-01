@@ -81,7 +81,7 @@ struct g_event {
 #define EV_INPROGRESS	0x10000
 
 void
-g_waitidle(void)
+g_waitidle(struct thread *td)
 {
 
 	g_topology_assert_not();
@@ -90,28 +90,29 @@ g_waitidle(void)
 	TSWAIT("GEOM events");
 	while (!TAILQ_EMPTY(&g_events))
 		msleep(&g_pending_events, &g_eventlock, PPAUSE,
-		    "g_waitidle", hz/5);
+		    "g_waitidle", 0);
 	TSUNWAIT("GEOM events");
 	mtx_unlock(&g_eventlock);
-	curthread->td_pflags &= ~TDP_GEOM;
+	td->td_pflags &= ~TDP_GEOM;
 }
 
-#if 0
-void
-g_waitidlelock(void)
+static void
+ast_geom(struct thread *td, int tda __unused)
 {
-
-	g_topology_assert();
-	mtx_lock(&g_eventlock);
-	while (!TAILQ_EMPTY(&g_events)) {
-		g_topology_unlock();
-		msleep(&g_pending_events, &g_eventlock, PPAUSE,
-		    "g_waitidlel", hz/5);
-		g_topology_lock();
-	}
-	mtx_unlock(&g_eventlock);
+	/*
+	 * If this thread tickled GEOM, we need to wait for the giggling to
+	 * stop before we return to userland.
+	 */
+	g_waitidle(td);
 }
-#endif
+
+static void
+geom_event_init(void *arg __unused)
+{
+	ast_register(TDA_GEOM, ASTR_ASTF_REQUIRED | ASTR_TDP | ASTR_KCLEAR,
+	    TDP_GEOM, ast_geom);
+}
+SYSINIT(geom_event, SI_SUB_INTRINSIC, SI_ORDER_ANY, geom_event_init, NULL);
 
 struct g_attrchanged_args {
 	struct g_provider *pp;
@@ -254,10 +255,6 @@ one_event(void)
 		wakeup(&g_pending_events);
 		return (0);
 	}
-	if (ep->flag & EV_INPROGRESS) {
-		mtx_unlock(&g_eventlock);
-		return (1);
-	}
 	ep->flag |= EV_INPROGRESS;
 	mtx_unlock(&g_eventlock);
 	g_topology_assert();
@@ -269,8 +266,8 @@ one_event(void)
 	ep->flag &= ~EV_INPROGRESS;
 	if (ep->flag & EV_WAKEUP) {
 		ep->flag |= EV_DONE;
-		mtx_unlock(&g_eventlock);
 		wakeup(ep);
+		mtx_unlock(&g_eventlock);
 	} else {
 		mtx_unlock(&g_eventlock);
 		g_free(ep);
@@ -279,7 +276,7 @@ one_event(void)
 }
 
 void
-g_run_events()
+g_run_events(void)
 {
 
 	for (;;) {
@@ -374,9 +371,7 @@ g_post_event_ep_va(g_event_t *func, void *arg, int wuflag,
 	mtx_unlock(&g_eventlock);
 	wakeup(&g_wait_event);
 	curthread->td_pflags |= TDP_GEOM;
-	thread_lock(curthread);
-	curthread->td_flags |= TDF_ASTPENDING;
-	thread_unlock(curthread);
+	ast_sched(curthread, TDA_GEOM);
 }
 
 void
@@ -423,7 +418,7 @@ g_post_event(g_event_t *func, void *arg, int flag, ...)
 }
 
 void
-g_do_wither()
+g_do_wither(void)
 {
 
 	mtx_lock(&g_eventlock);
@@ -457,7 +452,7 @@ g_waitfor_event(g_event_t *func, void *arg, int flag, ...)
 
 	mtx_lock(&g_eventlock);
 	while (!(ep->flag & EV_DONE))
-		msleep(ep, &g_eventlock, PRIBIO, "g_waitfor_event", hz);
+		msleep(ep, &g_eventlock, PRIBIO, "g_waitfor_event", 0);
 	if (ep->flag & EV_CANCELED)
 		error = EAGAIN;
 	mtx_unlock(&g_eventlock);
@@ -467,7 +462,7 @@ g_waitfor_event(g_event_t *func, void *arg, int flag, ...)
 }
 
 void
-g_event_init()
+g_event_init(void)
 {
 
 	mtx_init(&g_eventlock, "GEOM orphanage", NULL, MTX_DEF);

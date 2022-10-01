@@ -79,6 +79,13 @@ TAG_ARGS=	-T ${TAGS:[*]:S/ /,/g}
 .if ${MK_BIND_NOW} != "no"
 LDFLAGS+= -Wl,-znow
 .endif
+.if ${LINKER_TYPE} != "mac"
+.if ${MK_RELRO} == "no"
+LDFLAGS+= -Wl,-znorelro
+.else
+LDFLAGS+= -Wl,-zrelro
+.endif
+.endif
 .if ${MK_RETPOLINE} != "no"
 .if ${COMPILER_FEATURES:Mretpoline} && ${LINKER_FEATURES:Mretpoline}
 CFLAGS+= -mretpoline
@@ -121,12 +128,6 @@ CFLAGS+= ${DEBUG_FILES_CFLAGS}
 CXXFLAGS+= ${DEBUG_FILES_CFLAGS}
 .endif
 CTFFLAGS+= -g
-.endif
-
-# clang currently defaults to dynamic TLS for mips64 object files without -fPIC
-.if ${MACHINE_ARCH:Mmips64*} && ${COMPILER_TYPE} == "clang"
-STATIC_CFLAGS+= -ftls-model=initial-exec
-STATIC_CXXFLAGS+= -ftls-model=initial-exec
 .endif
 
 .if ${MACHINE_CPUARCH} == "riscv" && ${LINKER_FEATURES:Mriscv-relaxations} == ""
@@ -469,7 +470,7 @@ installpcfiles: installpcfiles-${pcfile}
 installpcfiles-${pcfile}: ${pcfile}
 	${INSTALL} ${TAG_ARGS:D${TAG_ARGS},dev} -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \
 	    ${_INSTALLFLAGS} \
-	    ${.ALLSRC} ${DESTDIR}${LIBDATADIR}/pkgconfig
+	    ${.ALLSRC} ${DESTDIR}${LIBDATADIR}/pkgconfig/
 .endfor
 .endif
 installpcfiles: .PHONY
@@ -481,10 +482,10 @@ _libinstall:
 .if defined(LIB) && !empty(LIB) && ${MK_INSTALLLIB} != "no"
 	${INSTALL} ${TAG_ARGS:D${TAG_ARGS},dev} -C -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \
 	    ${_INSTALLFLAGS} lib${LIB_PRIVATE}${LIB}${_STATICLIB_SUFFIX}.a ${DESTDIR}${_LIBDIR}/
-.endif
-.if ${MK_PROFILE} != "no" && defined(LIB) && !empty(LIB)
+.if ${MK_PROFILE} != "no"
 	${INSTALL} ${TAG_ARGS:D${TAG_ARGS},dev} -C -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \
 	    ${_INSTALLFLAGS} lib${LIB_PRIVATE}${LIB}_p.a ${DESTDIR}${_LIBDIR}/
+.endif
 .endif
 .if defined(SHLIB_NAME)
 	${INSTALL} ${TAG_ARGS} ${STRIP} -o ${LIBOWN} -g ${LIBGRP} -m ${LIBMODE} \

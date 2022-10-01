@@ -22,6 +22,7 @@
 __FBSDID("$FreeBSD$");
 
 #define PFIOC_USE_LATEST
+#define _WANT_FREEBSD_BITSET
 
 #include <sys/types.h>
 #include <sys/bitset.h>
@@ -1226,7 +1227,7 @@ char *
 rate2str(double rate)
 {
 	char		*buf;
-	static char	 r2sbuf[R2S_BUFS][RATESTR_MAX];  /* ring bufer */
+	static char	 r2sbuf[R2S_BUFS][RATESTR_MAX];  /* ring buffer */
 	static int	 idx = 0;
 	int		 i;
 	static const char unit[] = " KMG";

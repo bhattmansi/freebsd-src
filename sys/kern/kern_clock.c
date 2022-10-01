@@ -90,9 +90,6 @@ PMC_SOFT_DEFINE_EX( , , clock, prof, \
 extern void hardclock_device_poll(void);
 #endif /* DEVICE_POLLING */
 
-static void initclocks(void *dummy);
-SYSINIT(clocks, SI_SUB_CLOCKS, SI_ORDER_FIRST, initclocks, NULL);
-
 /* Spin-lock protecting profiling statistics. */
 static struct mtx time_lock;
 
@@ -388,12 +385,43 @@ DPCPU_DEFINE_STATIC(int, pcputicks);	/* Per-CPU version of ticks. */
 static int devpoll_run = 0;
 #endif
 
+static void
+ast_oweupc(struct thread *td, int tda __unused)
+{
+	if ((td->td_proc->p_flag & P_PROFIL) == 0)
+		return;
+	addupc_task(td, td->td_profil_addr, td->td_profil_ticks);
+	td->td_profil_ticks = 0;
+	td->td_pflags &= ~TDP_OWEUPC;
+}
+
+static void
+ast_alrm(struct thread *td, int tda __unused)
+{
+	struct proc *p;
+
+	p = td->td_proc;
+	PROC_LOCK(p);
+	kern_psignal(p, SIGVTALRM);
+	PROC_UNLOCK(p);
+}
+
+static void
+ast_prof(struct thread *td, int tda __unused)
+{
+	struct proc *p;
+
+	p = td->td_proc;
+	PROC_LOCK(p);
+	kern_psignal(p, SIGPROF);
+	PROC_UNLOCK(p);
+}
+
 /*
  * Initialize clock frequencies and start both clocks running.
  */
-/* ARGSUSED*/
 static void
-initclocks(void *dummy)
+initclocks(void *dummy __unused)
 {
 	int i;
 
@@ -412,6 +440,10 @@ initclocks(void *dummy)
 		profhz = i;
 	psratio = profhz / i;
 
+	ast_register(TDA_OWEUPC, ASTR_ASTF_REQUIRED, 0, ast_oweupc);
+	ast_register(TDA_ALRM, ASTR_ASTF_REQUIRED, 0, ast_alrm);
+	ast_register(TDA_PROF, ASTR_ASTF_REQUIRED, 0, ast_prof);
+
 #ifdef SW_WATCHDOG
 	/* Enable hardclock watchdog now, even if a hardware watchdog exists. */
 	watchdog_attach();
@@ -421,35 +453,33 @@ initclocks(void *dummy)
 		wdog_software_attach = watchdog_attach;
 #endif
 }
+SYSINIT(clocks, SI_SUB_CLOCKS, SI_ORDER_FIRST, initclocks, NULL);
 
 static __noinline void
 hardclock_itimer(struct thread *td, struct pstats *pstats, int cnt, int usermode)
 {
 	struct proc *p;
-	int flags;
+	int ast;
 
-	flags = 0;
+	ast = 0;
 	p = td->td_proc;
 	if (usermode &&
 	    timevalisset(&pstats->p_timer[ITIMER_VIRTUAL].it_value)) {
 		PROC_ITIMLOCK(p);
 		if (itimerdecr(&pstats->p_timer[ITIMER_VIRTUAL],
 		    tick * cnt) == 0)
-			flags |= TDF_ALRMPEND | TDF_ASTPENDING;
+			ast |= TDAI(TDA_ALRM);
 		PROC_ITIMUNLOCK(p);
 	}
 	if (timevalisset(&pstats->p_timer[ITIMER_PROF].it_value)) {
 		PROC_ITIMLOCK(p);
 		if (itimerdecr(&pstats->p_timer[ITIMER_PROF],
 		    tick * cnt) == 0)
-			flags |= TDF_PROFPEND | TDF_ASTPENDING;
+			ast |= TDAI(TDA_PROF);
 		PROC_ITIMUNLOCK(p);
 	}
-	if (flags != 0) {
-		thread_lock(td);
-		td->td_flags |= flags;
-		thread_unlock(td);
-	}
+	if (ast != 0)
+		ast_sched_mask(td, ast);
 }
 
 void

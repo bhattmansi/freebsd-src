@@ -3,6 +3,7 @@
 SHLIBDIR?= /lib
 
 .include <src.opts.mk>
+.include <bsd.compiler.mk>
 
 PACKAGE=	runtime
 LIB=	md
@@ -102,7 +103,7 @@ CFLAGS.skein_block.c+= -DSKEIN_LOOP=995
 .PATH: ${SRCTOP}/sys/crypto/skein ${SRCTOP}/sys/crypto/skein/${MACHINE_ARCH}
 
 USE_ASM_SOURCES?=1
-.if defined(BOOTSTRAPPING)
+.if defined(BOOTSTRAPPING) || ${MK_MACHDEP_OPTIMIZATIONS} == no
 # Don't build ASM sources when bootstrapping to avoid toolchain dependencies
 USE_ASM_SOURCES:=0
 .endif
@@ -133,6 +134,11 @@ ACFLAGS+= -DELF -Wa,--noexecstack
 SRCS+=	sha256c_arm64.c
 CFLAGS+= -DARM64_SHA2
 CFLAGS.sha256c_arm64.c+= -march=armv8-a+crypto
+.if ${COMPILER_FEATURES:Maarch64-sha512}
+SRCS+=	sha512c_arm64.c
+CFLAGS+= -DARM64_SHA512
+CFLAGS.sha512c_arm64.c+= -march=armv8.2-a+sha3
+.endif # aarch64-sha512
 .endif
 .endif # ${USE_ASM_SOURCES} != 0
 

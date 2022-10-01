@@ -4,6 +4,10 @@
  * Copyright (c) 2010 Panasas, Inc.
  * Copyright (c) 2013 Mellanox Technologies, Ltd.
  * All rights reserved.
+ * Copyright (c) 2021-2022 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Björn Zeeb
+ * under sponsorship from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,8 +32,8 @@
  *
  * $FreeBSD$
  */
-#ifndef	_LINUX_IF_ETHER_H_
-#define	_LINUX_IF_ETHER_H_
+#ifndef	_LINUXKPI_LINUX_IF_ETHER_H_
+#define	_LINUXKPI_LINUX_IF_ETHER_H_
 
 #include <linux/types.h>
 
@@ -55,6 +59,9 @@
 #define	ETH_P_8021AD	ETHERTYPE_QINQ
 #define	ETH_P_PAE	ETHERTYPE_PAE
 #define	ETH_P_802_2	ETHERTYPE_8023
+#define	ETH_P_IPX	ETHERTYPE_IPX
+#define	ETH_P_AARP	ETHERTYPE_AARP
+#define	ETH_P_802_3_MIN	0x05DD		/* See comment in sys/net/ethernet.h */
 #define	ETH_P_LINK_CTL	0x886C		/* ITU-T G.989.2 */
 #define	ETH_P_TDLS	0x890D		/* 802.11z-2010, see wpa. */
 
@@ -64,4 +71,6 @@ struct ethhdr {
 	uint16_t	h_proto;
 } __packed;
 
-#endif	/* _LINUX_IF_ETHER_H_ */
+#define	ETH_GSTRING_LEN	(2 * IF_NAMESIZE)	/* Increase if not large enough */
+
+#endif	/* _LINUXKPI_LINUX_IF_ETHER_H_ */

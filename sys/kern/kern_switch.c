@@ -131,7 +131,7 @@ sysctl_stats_reset(SYSCTL_HANDLER_ARGS)
 	 * Traverse the list of children of _kern_sched_stats and reset each
 	 * to 0.  Skip the reset entry.
 	 */
-	SLIST_FOREACH(p, oidp->oid_parent, oid_link) {
+	RB_FOREACH(p, sysctl_oid_list, oidp->oid_parent) {
 		if (p == oidp || p->oid_arg1 == NULL)
 			continue;
 		counter = (uintptr_t)p->oid_arg1;
@@ -143,7 +143,7 @@ sysctl_stats_reset(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_sched_stats, OID_AUTO, reset,
-    CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_INT | CTLFLAG_WR | CTLFLAG_MPSAFE, NULL, 0,
     sysctl_stats_reset, "I",
     "Reset scheduler statistics");
 #endif

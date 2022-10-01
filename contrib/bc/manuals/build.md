@@ -46,7 +46,7 @@ However, if you wish to build it yourself, this `bc` can be built using Visual
 Studio or MSBuild.
 
 Unfortunately, only one build configuration (besides Debug or Release) is
-supported: extra math enabled, history and NLS (locale support) disabled, with
+supported: extra math and history enabled, NLS (locale support) disabled, with
 both calculators built. The default [settings][11] are `BC_BANNER=1`,
 `{BC,DC}_SIGINT_RESET=0`, `{BC,DC}_TTY_MODE=1`, `{BC,DC}_PROMPT=1`.
 
@@ -82,6 +82,23 @@ where `<config>` is either one of `Debug`, `ReleaseMD`, or `ReleaseMT`.
 
 Building `bc`, `dc`, and `bcl` (the library) is more complex than on Windows
 because many build options are supported.
+
+### Out-of-Source Builds
+
+Out-of-source builds are done by calling `configure.sh` from the directory where
+the build will happen. The `Makefile` is generated into that directory, and the
+build can happen normally from there.
+
+For example, if the source is in `bc`, the build should happen in `build`, then
+call `configure.sh` and `make` like so:
+
+```
+../bc/configure.sh
+make
+```
+
+***WARNING***: The path to `configure.sh` from the build directory must not have
+spaces because `make` does not support target names with spaces.
 
 ### Cross Compiling
 
@@ -407,14 +424,45 @@ to `configure.sh`, as follows:
 
 Both commands are equivalent.
 
-History is automatically disabled when building for Windows or on another
-platform that does not support the terminal handling that is required.
-
 ***WARNING***: Of all of the code in the `bc`, this is the only code that is not
 completely portable. If the `bc` does not work on your platform, your first step
 should be to retry with history disabled.
 
 This option affects the [build type][7].
+
+##### Editline
+
+History support can be provided by editline, in order to implement `vi`-like
+keybindings and other features.
+
+To enable editline support pass either the `-e` flag or the `--enable-editline`
+option to `configure.sh`, as follows:
+
+```
+./configure.sh -e
+./configure.sh --enable-editline
+```
+
+Both commands are equivalent.
+
+This is ignored if history is disabled.
+
+##### Readline
+
+History support can be provided by readline, in order to implement `vi`-like
+keybindings and other features.
+
+To enable readline support pass either the `-r` flag or the `--enable-readline`
+option to `configure.sh`, as follows:
+
+```
+./configure.sh -r
+./configure.sh --enable-readline
+```
+
+Both commands are equivalent.
+
+This is ignored if history is disabled.
 
 #### NLS (Locale Support)
 

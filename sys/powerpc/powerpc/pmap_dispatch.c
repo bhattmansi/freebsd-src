@@ -175,7 +175,7 @@ DEFINE_PMAP_IFUNC(void, cpu_bootstrap, (int));
 DEFINE_PMAP_IFUNC(void *, mapdev, (vm_paddr_t, vm_size_t));
 DEFINE_PMAP_IFUNC(void *, mapdev_attr, (vm_paddr_t, vm_size_t, vm_memattr_t));
 DEFINE_PMAP_IFUNC(void, page_set_memattr, (vm_page_t, vm_memattr_t));
-DEFINE_PMAP_IFUNC(void, unmapdev, (vm_offset_t, vm_size_t));
+DEFINE_PMAP_IFUNC(void, unmapdev, (void *, vm_size_t));
 DEFINE_PMAP_IFUNC(int, map_user_ptr,
     (pmap_t, volatile const void *, void **, size_t, size_t *));
 DEFINE_PMAP_IFUNC(int, decode_kernel_ptr, (vm_offset_t, int *, vm_offset_t *));
@@ -188,7 +188,7 @@ DEFINE_PMAP_IFUNC(void, tlbie_all, (void));
 DEFINE_DUMPSYS_IFUNC(void, map_chunk, (vm_paddr_t, size_t, void **));
 DEFINE_DUMPSYS_IFUNC(void, unmap_chunk, (vm_paddr_t, size_t, void *));
 DEFINE_DUMPSYS_IFUNC(void, pa_init, (void));
-DEFINE_DUMPSYS_IFUNC(size_t, scan_pmap, (void));
+DEFINE_DUMPSYS_IFUNC(size_t, scan_pmap, (struct bitset *));
 DEFINE_DUMPSYS_IFUNC(void *, dump_pmap_init, (unsigned));
 DEFINE_DUMPSYS_IFUNC(void *, dump_pmap, (void *, void *, u_long *));
 

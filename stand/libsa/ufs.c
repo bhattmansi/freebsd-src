@@ -81,7 +81,6 @@ __FBSDID("$FreeBSD$");
 #include <ufs/ufs/dir.h>
 #include <ufs/ffs/fs.h>
 #include "stand.h"
-#include "disk.h"
 #include "string.h"
 
 static int	ufs_open(const char *path, struct open_file *f);
@@ -152,13 +151,11 @@ static int	search_directory(char *, struct open_file *, ino_t *);
 static int	ufs_use_sa_read(void *, off_t, void **, int);
 
 /* from ffs_subr.c */
-int	ffs_sbget(void *, struct fs **, off_t, char *,
+int	ffs_sbget(void *devfd, struct fs **fsp, off_t sblock, int flags,
+	    char *filltype,
+	    int (*readfunc)(void *devfd, off_t loc, void **bufp, int size));
+int	ffs_sbsearch(void *, struct fs **, int, char *,
 	    int (*)(void *, off_t, void **, int));
-/*
- * Request standard superblock location in ffs_sbget
- */
-#define	STDSB			-1	/* Fail if check-hash is bad */
-#define	STDSB_NOHASHFAIL	-2	/* Ignore check-hash failure */
 
 /*
  * Read a new inode into a file structure.
@@ -525,7 +522,7 @@ ufs_open(const char *upath, struct open_file *f)
 		return (errno);
 	f->f_fsdata = (void *)fp;
 
-	dev = disk_fmtdev(f->f_devdata);
+	dev = devformat((struct devdesc *)f->f_devdata);
 	/* Is this device mounted? */
 	STAILQ_FOREACH(mnt, &mnt_list, um_link) {
 		if (strcmp(dev, mnt->um_dev) == 0)
@@ -535,8 +532,8 @@ ufs_open(const char *upath, struct open_file *f)
 	if (mnt == NULL) {
 		/* read super block */
 		twiddle(1);
-		if ((rc = ffs_sbget(f, &fs, STDSB_NOHASHFAIL, "stand",
-		     ufs_use_sa_read)) != 0) {
+		if ((rc = ffs_sbget(f, &fs, UFS_STDSB, UFS_NOHASHFAIL, "stand",
+		    ufs_use_sa_read)) != 0) {
 			goto out;
 		}
 	} else {
@@ -643,11 +640,8 @@ ufs_open(const char *upath, struct open_file *f)
 			bcopy(cp, &namebuf[link_len], len + 1);
 
 			if (link_len < fs->fs_maxsymlinklen) {
-				if (fp->f_fs->fs_magic == FS_UFS1_MAGIC)
-					cp = (caddr_t)(fp->f_di.di1.di_db);
-				else
-					cp = (caddr_t)(fp->f_di.di2.di_db);
-				bcopy(cp, namebuf, (unsigned) link_len);
+				bcopy(DIP(fp, di_shortlink), namebuf,
+				    (unsigned) link_len);
 			} else {
 				/*
 				 * Read file for symbolic link
@@ -747,7 +741,7 @@ ufs_close(struct open_file *f)
 	}
 	free(fp->f_buf);
 
-	dev = disk_fmtdev(f->f_devdata);
+	dev = devformat((struct devdesc *)f->f_devdata);
 	STAILQ_FOREACH(mnt, &mnt_list, um_link) {
 		if (strcmp(dev, mnt->um_dev) == 0)
 			break;

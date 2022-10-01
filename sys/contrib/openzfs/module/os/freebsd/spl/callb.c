@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -338,10 +338,10 @@ callb_generic_cpr(void *arg, int code)
  * The generic callback function associated with kernel threads which
  * are always considered safe.
  */
-/* ARGSUSED */
 boolean_t
 callb_generic_cpr_safe(void *arg, int code)
 {
+	(void) arg, (void) code;
 	return (B_TRUE);
 }
 /*

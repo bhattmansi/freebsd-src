@@ -178,7 +178,7 @@ kmsan_report_hook(const void *addr, size_t size, size_t off, const char *hook)
 	char buf[128];
 	int type;
 
-	if (__predict_false(panicstr != NULL || kdb_active || kmsan_reporting))
+	if (__predict_false(KERNEL_PANICKED() || kdb_active || kmsan_reporting))
 		return;
 
 	kmsan_reporting = true;
@@ -234,7 +234,7 @@ kmsan_report_inline(msan_orig_t orig, unsigned long pc)
 	long foff;
 	int type;
 
-	if (__predict_false(panicstr != NULL || kdb_active || kmsan_reporting))
+	if (__predict_false(KERNEL_PANICKED() || kdb_active || kmsan_reporting))
 		return;
 
 	kmsan_reporting = true;
@@ -525,12 +525,12 @@ kmsan_shadow_map(vm_offset_t addr, size_t size)
 
 	va = kmsan_md_addr_to_shad(addr);
 	for (i = 0; i < npages; i++) {
-		pmap_kmsan_enter(va + ptoa(i));
+		pmap_san_enter(va + ptoa(i));
 	}
 
 	va = kmsan_md_addr_to_orig(addr);
 	for (i = 0; i < npages; i++) {
-		pmap_kmsan_enter(va + ptoa(i));
+		pmap_san_enter(va + ptoa(i));
 	}
 }
 

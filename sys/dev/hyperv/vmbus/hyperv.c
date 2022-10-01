@@ -248,7 +248,11 @@ hyperv_init(void *dummy __unused)
 	wrmsr(MSR_HV_GUEST_OS_ID, MSR_HV_GUESTID_FREEBSD);
 
 	if (hyperv_features & CPUID_HV_MSR_TIME_REFCNT) {
-		/* Register Hyper-V timecounter */
+		/*
+		 * Register Hyper-V timecounter.  This should be done as early
+		 * as possible to let DELAY() work, since the 8254 PIT is not
+		 * reliably emulated or even available.
+		 */
 		tc_init(&hyperv_timecounter);
 
 		/*
@@ -264,7 +268,7 @@ SYSINIT(hyperv_initialize, SI_SUB_HYPERVISOR, SI_ORDER_FIRST, hyperv_init,
 static void
 hypercall_memfree(void)
 {
-	kmem_free((vm_offset_t)hypercall_context.hc_addr, PAGE_SIZE);
+	kmem_free(hypercall_context.hc_addr, PAGE_SIZE);
 	hypercall_context.hc_addr = NULL;
 }
 
@@ -282,8 +286,7 @@ hypercall_create(void *arg __unused)
 	 *   the NX bit.
 	 * - Assume kmem_malloc() returns properly aligned memory.
 	 */
-	hypercall_context.hc_addr = (void *)kmem_malloc(PAGE_SIZE, M_EXEC |
-	    M_WAITOK);
+	hypercall_context.hc_addr = kmem_malloc(PAGE_SIZE, M_EXEC | M_WAITOK);
 	hypercall_context.hc_paddr = vtophys(hypercall_context.hc_addr);
 
 	/* Get the 'reserved' bits, which requires preservation. */

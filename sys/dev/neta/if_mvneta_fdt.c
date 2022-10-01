@@ -83,10 +83,8 @@ static device_method_t mvneta_fdt_methods[] = {
 DEFINE_CLASS_1(mvneta, mvneta_fdt_driver, mvneta_fdt_methods,
     sizeof(struct mvneta_softc), mvneta_driver);
 
-static devclass_t mvneta_fdt_devclass;
-
-DRIVER_MODULE(mvneta, ofwbus, mvneta_fdt_driver, mvneta_fdt_devclass, 0, 0);
-DRIVER_MODULE(mvneta, simplebus, mvneta_fdt_driver, mvneta_fdt_devclass, 0, 0);
+DRIVER_MODULE(mvneta, ofwbus, mvneta_fdt_driver, 0, 0);
+DRIVER_MODULE(mvneta, simplebus, mvneta_fdt_driver, 0, 0);
 
 static int mvneta_fdt_phy_acquire(device_t);
 
@@ -133,7 +131,7 @@ mvneta_fdt_attach(device_t dev)
 	}
 
 	if (ofw_bus_has_prop(dev, "tx-csum-limit")) {
-		err = OF_getprop(ofw_bus_get_node(dev), "tx-csum-limit",
+		err = OF_getencprop(ofw_bus_get_node(dev), "tx-csum-limit",
 			    &tx_csum_limit, sizeof(tx_csum_limit));
 		if (err <= 0) {
 			device_printf(dev,

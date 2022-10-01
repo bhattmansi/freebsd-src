@@ -78,6 +78,8 @@ typedef struct zfs_zstd_meta {
  * kstat helper macros
  */
 #define	ZSTDSTAT(stat)		(zstd_stats.stat.value.ui64)
+#define	ZSTDSTAT_ZERO(stat)	\
+	atomic_store_64(&zstd_stats.stat.value.ui64, 0)
 #define	ZSTDSTAT_ADD(stat, val) \
 	atomic_add_64(&zstd_stats.stat.value.ui64, (val))
 #define	ZSTDSTAT_SUB(stat, val) \
@@ -89,6 +91,8 @@ int zstd_init(void);
 void zstd_fini(void);
 
 size_t zfs_zstd_compress(void *s_start, void *d_start, size_t s_len,
+    size_t d_len, int level);
+size_t zfs_zstd_compress_wrap(void *s_start, void *d_start, size_t s_len,
     size_t d_len, int level);
 int zfs_zstd_get_level(void *s_start, size_t s_len, uint8_t *level);
 int zfs_zstd_decompress_level(void *s_start, void *d_start, size_t s_len,
@@ -210,12 +214,14 @@ zfs_get_hdrversion(const zfs_zstdhdr_t *blob)
 static inline void
 zfs_set_hdrversion(zfs_zstdhdr_t *blob, uint32_t version)
 {
+	/* cppcheck-suppress syntaxError */
 	BF32_SET(blob->raw_version_level, 0, 24, version);
 }
 
 static inline void
 zfs_set_hdrlevel(zfs_zstdhdr_t *blob, uint8_t level)
 {
+	/* cppcheck-suppress syntaxError */
 	BF32_SET(blob->raw_version_level, 24, 8, level);
 }
 

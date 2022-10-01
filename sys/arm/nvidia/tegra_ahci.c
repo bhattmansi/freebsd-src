@@ -626,7 +626,6 @@ tegra_ahci_ctlr_reset(device_t dev)
 	reg &= ~T_AHCI_HBA_CAP_BKDR_NUM_PORTS(~0);
 	reg |= T_AHCI_HBA_CAP_BKDR_NUM_PORTS(0);
 	reg |= T_AHCI_HBA_CAP_BKDR_EXT_SATA;
-	reg |= T_AHCI_HBA_CAP_BKDR_ENCL_MGMT_SUPP;
 	reg |= T_AHCI_HBA_CAP_BKDR_CMD_CMPL_COALESING;
 	reg |= T_AHCI_HBA_CAP_BKDR_FIS_SWITCHING;
 	reg |= T_AHCI_HBA_CAP_BKDR_SUPP_PM;
@@ -781,5 +780,4 @@ static device_method_t tegra_ahci_methods[] = {
 
 static DEFINE_CLASS_0(ahci, tegra_ahci_driver, tegra_ahci_methods,
     sizeof(struct tegra_ahci_sc));
-DRIVER_MODULE(tegra_ahci, simplebus, tegra_ahci_driver, ahci_devclass,
-    NULL, NULL);
+DRIVER_MODULE(tegra_ahci, simplebus, tegra_ahci_driver, NULL, NULL);

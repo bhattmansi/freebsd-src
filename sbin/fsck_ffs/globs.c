@@ -155,8 +155,8 @@ fsckinit(void)
 	resolved = 0;
 	havesb = 0;
 	fsmodified = 0;
-	fsreadfd = 0;
-	fswritefd = 0;
+	fsreadfd = -1;
+	fswritefd = -1;
 	maxfsblock = 0;
 	maxino = 0;
 	lfdir = 0;

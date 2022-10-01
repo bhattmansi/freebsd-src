@@ -37,7 +37,8 @@
 __FBSDID("$FreeBSD$");
 
 #include "namespace.h"
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/auxv.h>
 #include <sys/signalvar.h>
 #include <sys/ioctl.h>
 #include <sys/link_elf.h>
@@ -61,7 +62,7 @@ __FBSDID("$FreeBSD$");
 #include "libc_private.h"
 #include "thr_private.h"
 
-char		*_stacktop;
+char		*_usrstack;
 struct pthread	*_thr_initial;
 int		_libthr_debug;
 int		_thread_event_mask;
@@ -388,7 +389,7 @@ init_main_thread(struct pthread *thread)
 	 * resource limits, so this stack needs an explicitly mapped
 	 * red zone to protect the thread stack that is just beyond.
 	 */
-	if (mmap(_stacktop - _thr_stack_initial -
+	if (mmap(_usrstack - _thr_stack_initial -
 	    _thr_guard_default, _thr_guard_default, 0, MAP_ANON,
 	    -1, 0) == MAP_FAILED)
 		PANIC("Cannot allocate red zone for initial thread");
@@ -402,7 +403,7 @@ init_main_thread(struct pthread *thread)
 	 *       actually free() it; it just puts it in the free
 	 *       stack queue for later reuse.
 	 */
-	thread->attr.stackaddr_attr = _stacktop - _thr_stack_initial;
+	thread->attr.stackaddr_attr = _usrstack - _thr_stack_initial;
 	thread->attr.stacksize_attr = _thr_stack_initial;
 	thread->attr.guardsize_attr = _thr_guard_default;
 	thread->attr.flags |= THR_STACK_USER;
@@ -427,18 +428,49 @@ init_main_thread(struct pthread *thread)
 	thread->attr.prio = sched_param.sched_priority;
 
 #ifdef _PTHREAD_FORCED_UNWIND
-	thread->unwind_stackend = _stacktop;
+	thread->unwind_stackend = _usrstack;
 #endif
 
 	/* Others cleared to zero by thr_alloc() */
 }
 
+bool
+__thr_get_main_stack_base(char **base)
+{
+	size_t len;
+	int mib[2];
+
+	if (elf_aux_info(AT_USRSTACKBASE, base, sizeof(*base)) == 0)
+		return (true);
+
+	mib[0] = CTL_KERN;
+	mib[1] = KERN_USRSTACK;
+	len = sizeof(*base);
+	if (sysctl(mib, nitems(mib), base, &len, NULL, 0) == 0)
+		return (true);
+
+	return (false);
+}
+
+bool
+__thr_get_main_stack_lim(size_t *lim)
+{
+	struct rlimit rlim;
+
+	if (elf_aux_info(AT_USRSTACKLIM, lim, sizeof(*lim)) == 0)
+		return (true);
+
+	if (getrlimit(RLIMIT_STACK, &rlim) == 0) {
+		*lim = rlim.rlim_cur;
+		return (true);
+	}
+
+	return (false);
+}
+
 static void
 init_private(void)
 {
-	struct rlimit rlim;
-	size_t len;
-	int mib[2];
 	char *env, *env_bigstack, *env_splitstack;
 
 	_thr_umutex_init(&_mutex_static_lock);
@@ -462,21 +494,15 @@ init_private(void)
 	if (init_once == 0) {
 		__thr_pshared_init();
 		__thr_malloc_init();
+
 		/* Find the stack top */
-		mib[0] = CTL_KERN;
-		mib[1] = KERN_STACKTOP;
-		len = sizeof (_stacktop);
-		if (sysctl(mib, 2, &_stacktop, &len, NULL, 0) == -1) {
-			mib[1] = KERN_USRSTACK;
-			if (sysctl(mib, 2, &_stacktop, &len, NULL, 0) == -1)
-				PANIC("Cannot get kern.usrstack from sysctl");
-		}
+		if (!__thr_get_main_stack_base(&_usrstack))
+			PANIC("Cannot get kern.usrstack");
 		env_bigstack = getenv("LIBPTHREAD_BIGSTACK_MAIN");
 		env_splitstack = getenv("LIBPTHREAD_SPLITSTACK_MAIN");
 		if (env_bigstack != NULL || env_splitstack == NULL) {
-			if (getrlimit(RLIMIT_STACK, &rlim) == -1)
+			if (!__thr_get_main_stack_lim(&_thr_stack_initial))
 				PANIC("Cannot get stack rlimit");
-			_thr_stack_initial = rlim.rlim_cur;
 		}
 		_thr_is_smp = sysconf(_SC_NPROCESSORS_CONF);
 		if (_thr_is_smp == -1)

@@ -30,12 +30,14 @@
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
+#include <sys/elf.h>
 #include <sys/exec.h>
 #include <sys/imgact.h>
 #include <sys/malloc.h>
 #include <sys/proc.h>
 #include <sys/namei.h>
 #include <sys/fcntl.h>
+#include <sys/reg.h>
 #include <sys/sysent.h>
 #include <sys/imgact_elf.h>
 #include <sys/jail.h>
@@ -47,6 +49,8 @@
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
+#include <vm/pmap.h>
+#include <vm/vm_map.h>
 
 #include <machine/altivec.h>
 #include <machine/cpu.h>
@@ -62,7 +66,6 @@ static void exec_setregs_funcdesc(struct thread *td, struct image_params *imgp,
 struct sysentvec elf64_freebsd_sysvec_v1 = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= sysent,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= __elfN(freebsd_fixup),
 	.sv_sendsig	= sendsig,
 	.sv_sigcode	= sigcode64,
@@ -78,6 +81,7 @@ struct sysentvec elf64_freebsd_sysvec_v1 = {
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_ALL,
 	.sv_copyout_auxargs = __elfN(powerpc_copyout_auxargs),
 	.sv_copyout_strings = exec_copyout_strings,
@@ -98,12 +102,13 @@ struct sysentvec elf64_freebsd_sysvec_v1 = {
 	.sv_hwcap2	= &cpu_features2,
 	.sv_onexec_old	= exec_onexec_old,
 	.sv_onexit	= exit_onexit,
+	.sv_regset_begin = SET_BEGIN(__elfN(regset)),
+	.sv_regset_end  = SET_LIMIT(__elfN(regset)),
 };
 
 struct sysentvec elf64_freebsd_sysvec_v2 = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= sysent,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= __elfN(freebsd_fixup),
 	.sv_sendsig	= sendsig,
 	.sv_sigcode	= sigcode64, /* Fixed up in ppc64_init_sysvecs(). */
@@ -119,6 +124,7 @@ struct sysentvec elf64_freebsd_sysvec_v2 = {
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_ALL,
 	.sv_copyout_auxargs = __elfN(powerpc_copyout_auxargs),
 	.sv_copyout_strings = exec_copyout_strings,
@@ -139,6 +145,8 @@ struct sysentvec elf64_freebsd_sysvec_v2 = {
 	.sv_hwcap2	= &cpu_features2,
 	.sv_onexec_old	= exec_onexec_old,
 	.sv_onexit	= exit_onexit,
+	.sv_regset_begin = SET_BEGIN(__elfN(regset)),
+	.sv_regset_end  = SET_LIMIT(__elfN(regset)),
 };
 
 static boolean_t ppc64_elfv1_header_match(struct image_params *params,
@@ -210,10 +218,10 @@ ppc64_init_sysvecs(void *arg)
 	 * exec_sysvec_init_secondary() assumes secondary sysvecs use
 	 * identical signal code, and skips allocating a second copy.
 	 * Since the ELFv2 trampoline is a strict subset of the ELFv1 code,
-	 * we can work around this by adjusting the base address. This also
+	 * we can work around this by adjusting the offset. This also
 	 * avoids two copies of the trampoline code being allocated!
 	 */
-	elf64_freebsd_sysvec_v2.sv_sigcode_base +=
+	elf64_freebsd_sysvec_v2.sv_sigcode_offset +=
 	    (uintptr_t)sigcode64_elfv2 - (uintptr_t)&sigcode64;
 	elf64_freebsd_sysvec_v2.sv_szsigcode = &szsigcode64_elfv2;
 }

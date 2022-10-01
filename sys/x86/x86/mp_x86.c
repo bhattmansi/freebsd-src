@@ -214,7 +214,7 @@ add_deterministic_cache(int type, int level, int share_count)
 	if (type == 2) /* ignore instruction cache */
 		return (1);
 	if (level == 0 || level > MAX_CACHE_LEVELS) {
-		printf("unexpected cache level %d\n", type);
+		printf("unexpected cache level %d\n", level);
 		return (1);
 	}
 
@@ -380,7 +380,7 @@ topo_probe_intel_0x4(void)
 
 /*
  * Determine topology of processing units for Intel CPUs
- * using CPUID Leaf 11, if supported.
+ * using CPUID Leaf 1Fh or 0Bh, if supported.
  * See:
  *  - Intel 64 Architecture Processor Topology Enumeration
  *  - Intel 64 and IA-32 ArchitecturesSoftware Developer’s Manual,
@@ -390,13 +390,23 @@ topo_probe_intel_0x4(void)
 static void
 topo_probe_intel_0xb(void)
 {
-	u_int p[4];
+	u_int leaf;
+	u_int p[4] = { 0 };
 	int bits;
 	int type;
 	int i;
 
-	/* Fall back if CPU leaf 11 doesn't really exist. */
-	cpuid_count(0x0b, 0, p);
+	/* Prefer leaf 1Fh (V2 Extended Topology Enumeration). */
+	if (cpu_high >= 0x1f) {
+		leaf = 0x1f;
+		cpuid_count(leaf, 0, p);
+	}
+	/* Fall back to leaf 0Bh (Extended Topology Enumeration). */
+	if (p[1] == 0) {
+		leaf = 0x0b;
+		cpuid_count(leaf, 0, p);
+	}
+	/* Fall back to leaf 04h (Deterministic Cache Parameters). */
 	if (p[1] == 0) {
 		topo_probe_intel_0x4();
 		return;
@@ -404,7 +414,7 @@ topo_probe_intel_0xb(void)
 
 	/* We only support three levels for now. */
 	for (i = 0; ; i++) {
-		cpuid_count(0x0b, i, p);
+		cpuid_count(leaf, i, p);
 
 		bits = p[0] & 0x1f;
 		type = (p[2] >> 8) & 0xff;
@@ -412,13 +422,12 @@ topo_probe_intel_0xb(void)
 		if (type == 0)
 			break;
 
-		/* TODO: check for duplicate (re-)assignment */
 		if (type == CPUID_TYPE_SMT)
 			core_id_shift = bits;
 		else if (type == CPUID_TYPE_CORE)
 			pkg_id_shift = bits;
-		else
-			printf("unknown CPU level type %d\n", type);
+		else if (bootverbose)
+			printf("Topology level type %d shift: %d\n", type, bits);
 	}
 
 	if (pkg_id_shift < core_id_shift) {
@@ -862,6 +871,25 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 	nchildren = 0;
 	node = root;
 	while (node != NULL) {
+		/*
+		 * When some APICs are disabled by tunables, nodes can end up
+		 * with an empty cpuset. Nodes with an empty cpuset will be
+		 * translated into cpu groups with empty cpusets. smp_topo_fill
+		 * will then set cg_first and cg_last to -1. This isn't
+		 * correctly handled in all functions. E.g. when
+		 * cpu_search_lowest and cpu_search_highest loop through all
+		 * cpus, they call CPU_ISSET on cpu -1 which ends up in a
+		 * general protection fault.
+		 *
+		 * We could fix the scheduler to handle empty cpu groups
+		 * correctly. Nevertheless, empty cpu groups are causing
+		 * overhead for no value. So, it makes more sense to just don't
+		 * create them.
+		 */
+		if (CPU_EMPTY(&node->cpuset)) {
+			node = topo_next_node(root, node);
+			continue;
+		}
 		if (CPU_CMP(&node->cpuset, &root->cpuset) == 0) {
 			if (node->type == TOPO_TYPE_CACHE &&
 			    cg_root->cg_level < node->subtype)
@@ -887,8 +915,14 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 	if (nchildren == root->cpu_count)
 		return;
 
-	cg_root->cg_child = smp_topo_alloc(nchildren);
+	/*
+	 * We are not interested in nodes without children.
+	 */
 	cg_root->cg_children = nchildren;
+	if (nchildren == 0)
+		return;
+
+	cg_root->cg_child = smp_topo_alloc(nchildren);
 
 	/*
 	 * Now find again the same cache nodes as above and recursively
@@ -900,7 +934,8 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 		if ((node->type != TOPO_TYPE_GROUP &&
 		    node->type != TOPO_TYPE_NODE &&
 		    node->type != TOPO_TYPE_CACHE) ||
-		    CPU_CMP(&node->cpuset, &root->cpuset) == 0) {
+		    CPU_CMP(&node->cpuset, &root->cpuset) == 0 ||
+		    CPU_EMPTY(&node->cpuset)) {
 			node = topo_next_node(root, node);
 			continue;
 		}
@@ -1040,6 +1075,7 @@ init_secondary_tail(void)
 	/* Initialize curthread. */
 	KASSERT(PCPU_GET(idlethread) != NULL, ("no idle thread"));
 	PCPU_SET(curthread, PCPU_GET(idlethread));
+	schedinit_ap();
 
 	mtx_lock_spin(&ap_boot_mtx);
 
@@ -1093,12 +1129,7 @@ init_secondary_tail(void)
 
 	kcsan_cpu_init(cpuid);
 
-	/*
-	 * Assert that smp_after_idle_runnable condition is reasonable.
-	 */
-	MPASS(PCPU_GET(curpcb) == NULL);
-
-	sched_throw(NULL);
+	sched_ap_entry();
 
 	panic("scheduler returned us to %s", __func__);
 	/* NOTREACHED */
@@ -1107,15 +1138,23 @@ init_secondary_tail(void)
 static void
 smp_after_idle_runnable(void *arg __unused)
 {
-	struct pcpu *pc;
 	int cpu;
 
+	if (mp_ncpus == 1)
+		return;
+
+	KASSERT(smp_started != 0, ("%s: SMP not started yet", __func__));
+
+	/*
+	 * Wait for all APs to handle an interrupt.  After that, we know that
+	 * the APs have entered the scheduler at least once, so the boot stacks
+	 * are safe to free.
+	 */
+	smp_rendezvous(smp_no_rendezvous_barrier, NULL,
+	    smp_no_rendezvous_barrier, NULL);
+
 	for (cpu = 1; cpu < mp_ncpus; cpu++) {
-		pc = pcpu_find(cpu);
-		while (atomic_load_ptr(&pc->pc_curpcb) == NULL)
-			cpu_spinwait();
-		kmem_free((vm_offset_t)bootstacks[cpu], kstack_pages *
-		    PAGE_SIZE);
+		kmem_free(bootstacks[cpu], kstack_pages * PAGE_SIZE);
 	}
 }
 SYSINIT(smp_after_idle_runnable, SI_SUB_SMP, SI_ORDER_ANY,

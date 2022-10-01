@@ -30,7 +30,8 @@
 #include <sys/cdefs.h>
 __FBSDID("$FreeBSD$");
 
-#include <sys/types.h>
+#include <sys/param.h>
+#include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/queue.h>
 #include <sys/resource.h>
@@ -147,23 +148,13 @@ _thr_stack_fix_protection(struct pthread *thrd)
 static void
 singlethread_map_stacks_exec(void)
 {
-	int mib[2];
-	struct rlimit rlim;
-	u_long stacktop;
-	size_t len;
+	char *usrstack;
+	size_t stacksz;
 
-	mib[0] = CTL_KERN;
-	mib[1] = KERN_STACKTOP;
-	len = sizeof(stacktop);
-	if (sysctl(mib, nitems(mib), &stacktop, &len, NULL, 0) == -1) {
-		mib[1] = KERN_USRSTACK;
-		if (sysctl(mib, nitems(mib), &stacktop, &len, NULL, 0) == -1)
-			return;
-	}
-	if (getrlimit(RLIMIT_STACK, &rlim) == -1)
+	if (!__thr_get_main_stack_base(&usrstack) ||
+	    !__thr_get_main_stack_lim(&stacksz))
 		return;
-	mprotect((void *)(uintptr_t)(stacktop - rlim.rlim_cur),
-	    rlim.rlim_cur, _rtld_get_stack_prot());
+	mprotect(usrstack - stacksz, stacksz, _rtld_get_stack_prot());
 }
 
 void
@@ -215,7 +206,7 @@ _thr_stack_alloc(struct pthread_attr *attr)
 
 	/*
 	 * Use the garbage collector lock for synchronization of the
-	 * spare stack lists and allocations from stacktop.
+	 * spare stack lists and allocations from usrstack.
 	 */
 	THREAD_LIST_WRLOCK(curthread);
 	/*
@@ -251,11 +242,11 @@ _thr_stack_alloc(struct pthread_attr *attr)
 	}
 	else {
 		/*
-		 * Allocate a stack from or below stacktop, depending
+		 * Allocate a stack from or below usrstack, depending
 		 * on the LIBPTHREAD_BIGSTACK_MAIN env variable.
 		 */
 		if (last_stack == NULL)
-			last_stack = _stacktop - _thr_stack_initial -
+			last_stack = _usrstack - _thr_stack_initial -
 			    _thr_guard_default;
 
 		/* Allocate a new stack. */

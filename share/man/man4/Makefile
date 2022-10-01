@@ -46,10 +46,10 @@ MAN=	aac.4 \
 	${_amdsmn.4} \
 	${_amdtemp.4} \
 	${_bxe.4} \
-	amr.4 \
 	${_aout.4} \
 	${_apic.4} \
 	arcmsr.4 \
+	arswitch.4 \
 	${_asmc.4} \
 	at45d.4 \
 	ata.4 \
@@ -70,6 +70,7 @@ MAN=	aac.4 \
 	axge.4 \
 	axp.4 \
 	bce.4 \
+	bcm5974.4 \
 	bcma.4 \
 	bfe.4 \
 	bge.4 \
@@ -81,6 +82,7 @@ MAN=	aac.4 \
 	bhndb_pci.4 \
 	blackhole.4 \
 	bnxt.4 \
+	boottrace.4 \
 	bpf.4 \
 	bridge.4 \
 	bwi.4 \
@@ -141,7 +143,6 @@ MAN=	aac.4 \
 	ena.4 \
 	enc.4 \
 	epair.4 \
-	esp.4 \
 	est.4 \
 	et.4 \
 	etherswitch.4 \
@@ -165,6 +166,7 @@ MAN=	aac.4 \
 	gbde.4 \
 	gdb.4 \
 	gem.4 \
+	genet.4 \
 	geom.4 \
 	geom_linux_lvm.4 \
 	geom_map.4 \
@@ -210,6 +212,7 @@ MAN=	aac.4 \
 	icmp.4 \
 	icmp6.4 \
 	ida.4 \
+	ietp.4 \
 	if_ipsec.4 \
 	iflib.4 \
 	ifmib.4 \
@@ -222,7 +225,6 @@ MAN=	aac.4 \
 	iichid.4 \
 	iicmux.4 \
 	iicsmb.4 \
-	iir.4 \
 	${_igc.4} \
 	${_imcsmb.4} \
 	inet.4 \
@@ -252,6 +254,8 @@ MAN=	aac.4 \
 	iwmfw.4 \
 	iwn.4 \
 	iwnfw.4 \
+	iwlwifi.4 \
+	iwlwififw.4 \
 	ixgbe.4 \
 	ixl.4 \
 	jedec_dimm.4 \
@@ -287,15 +291,16 @@ MAN=	aac.4 \
 	mac_ntpd.4 \
 	mac_partition.4 \
 	mac_portacl.4 \
+	mac_priority.4 \
 	mac_seeotheruids.4 \
 	mac_stub.4 \
 	mac_test.4 \
 	malo.4 \
+	max44009.4 \
 	md.4 \
 	mdio.4 \
 	me.4 \
 	mem.4 \
-	meteor.4 \
 	mfi.4 \
 	${_mgb.4} \
 	miibus.4 \
@@ -303,7 +308,6 @@ MAN=	aac.4 \
 	mlx.4 \
 	mlx4en.4 \
 	mlx5en.4 \
-	mly.4 \
 	mmc.4 \
 	mmcsd.4 \
 	mod_cc.4 \
@@ -378,7 +382,6 @@ MAN=	aac.4 \
 	ng_socket.4 \
 	ng_source.4 \
 	ng_split.4 \
-	ng_sppp.4 \
 	ng_sscfu.4 \
 	ng_sscop.4 \
 	ng_tag.4 \
@@ -415,11 +418,15 @@ MAN=	aac.4 \
 	ow.4 \
 	ow_temp.4 \
 	owc.4 \
+	ovpn.4 \
 	${_padlock.4} \
 	pass.4 \
+	pca954x.4 \
 	pccard.4 \
 	pccbb.4 \
 	pcf.4 \
+	pcf8574.4 \
+	pcf8591.4 \
 	${_pchtherm.4} \
 	pci.4 \
 	pcib.4 \
@@ -445,7 +452,7 @@ MAN=	aac.4 \
 	pty.4 \
 	puc.4 \
 	pwmc.4 \
-	${_qat.4} \
+	${_qat_c2xxx.4} \
 	${_qlxge.4} \
 	${_qlxgb.4} \
 	${_qlxgbe.4} \
@@ -460,6 +467,8 @@ MAN=	aac.4 \
 	rndtest.4 \
 	route.4 \
 	rtsx.4 \
+	rtw88.4 \
+	rtw88fw.4 \
 	rtwn.4 \
 	rtwnfw.4 \
 	rtwn_pci.4 \
@@ -493,29 +502,22 @@ MAN=	aac.4 \
 	smbus.4 \
 	smp.4 \
 	smsc.4 \
-	snd_ad1816.4 \
 	snd_als4000.4 \
 	snd_atiixp.4 \
 	snd_cmi.4 \
 	snd_cs4281.4 \
 	snd_csa.4 \
-	snd_ds1.4 \
 	snd_emu10k1.4 \
 	snd_emu10kx.4 \
 	snd_envy24.4 \
 	snd_envy24ht.4 \
 	snd_es137x.4 \
-	snd_ess.4 \
 	snd_fm801.4 \
-	snd_gusc.4 \
 	snd_hda.4 \
 	snd_hdspe.4 \
 	snd_ich.4 \
 	snd_maestro3.4 \
-	snd_maestro.4 \
-	snd_mss.4 \
 	snd_neomagic.4 \
-	snd_sbc.4 \
 	snd_solo.4 \
 	snd_spicds.4 \
 	snd_t4dwave.4 \
@@ -528,7 +530,6 @@ MAN=	aac.4 \
 	spigen.4 \
 	${_spkr.4} \
 	splash.4 \
-	sppp.4 \
 	ste.4 \
 	stf.4 \
 	stge.4 \
@@ -544,15 +545,14 @@ MAN=	aac.4 \
 	tcp.4 \
 	tcp_bbr.4 \
 	tdfx.4 \
-	terasic_mtl.4 \
 	termios.4 \
 	textdump.4 \
 	ti.4 \
 	timecounters.4 \
 	${_tpm.4} \
+	tslog.4 \
 	tty.4 \
 	tun.4 \
-	twa.4 \
 	twe.4 \
 	tws.4 \
 	udp.4 \
@@ -667,6 +667,7 @@ MLINKS+=fwe.4 if_fwe.4
 MLINKS+=fwip.4 if_fwip.4
 MLINKS+=fxp.4 if_fxp.4
 MLINKS+=gem.4 if_gem.4
+MLINKS+=genet.4 if_genet.4
 MLINKS+=geom.4 GEOM.4
 MLINKS+=gif.4 if_gif.4
 MLINKS+=gpio.4 gpiobus.4
@@ -736,8 +737,6 @@ MLINKS+=sk.4 if_sk.4
 MLINKS+=smp.4 SMP.4
 MLINKS+=smsc.4 if_smsc.4
 MLINKS+=snd_envy24.4 snd_ak452x.4
-MLINKS+=snd_sbc.4 snd_sb16.4 \
-	snd_sbc.4 snd_sb8.4
 MLINKS+=${_spkr.4} ${_speaker.4}
 MLINKS+=splash.4 screensaver.4
 MLINKS+=ste.4 if_ste.4
@@ -831,7 +830,7 @@ _nvme.4=	nvme.4
 _nvram.4=	nvram.4
 _padlock.4=	padlock.4
 _pchtherm.4=	pchtherm.4
-_qat.4=		qat.4
+_qat_c2xxx.4=	qat_c2xxx.4
 _rr232x.4=	rr232x.4
 _speaker.4=	speaker.4
 _spkr.4=	spkr.4
@@ -938,7 +937,6 @@ MLINKS+=	efidev.4 efirtc.4
 .if ${MK_ISCSI} != "no"
 MAN+=		cfiscsi.4
 MAN+=		iscsi.4
-MAN+=		iscsi_initiator.4
 MAN+=		iser.4
 .endif
 

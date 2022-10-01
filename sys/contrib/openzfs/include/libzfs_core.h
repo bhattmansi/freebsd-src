@@ -6,7 +6,7 @@
  * You may not use this file except in compliance with the License.
  *
  * You can obtain a copy of the license at usr/src/OPENSOLARIS.LICENSE
- * or http://www.opensolaris.org/os/licensing.
+ * or https://opensource.org/licenses/CDDL-1.0.
  * See the License for the specific language governing permissions
  * and limitations under the License.
  *
@@ -21,9 +21,9 @@
 
 /*
  * Copyright (c) 2012, 2020 by Delphix. All rights reserved.
- * Copyright (c) 2017 Datto Inc.
  * Copyright 2017 RackTop Systems.
  * Copyright (c) 2017 Open-E, Inc. All Rights Reserved.
+ * Copyright (c) 2019 Datto Inc.
  */
 
 #ifndef	_LIBZFS_CORE_H
@@ -40,6 +40,9 @@ extern "C" {
 
 _LIBZFS_CORE_H int libzfs_core_init(void);
 _LIBZFS_CORE_H void libzfs_core_fini(void);
+
+struct zfs_cmd;
+_LIBZFS_CORE_H int lzc_ioctl_fd(int, unsigned long, struct zfs_cmd *);
 
 /*
  * NB: this type should be kept binary-compatible with dmu_objset_type_t.
@@ -83,6 +86,7 @@ enum lzc_send_flags {
 	LZC_SEND_FLAG_SAVED = 1 << 4,
 };
 
+_LIBZFS_CORE_H int lzc_send_wrapper(int (*)(int, void *), int, void *);
 _LIBZFS_CORE_H int lzc_send(const char *, const char *, int,
     enum lzc_send_flags);
 _LIBZFS_CORE_H int lzc_send_resume(const char *, const char *, int,
@@ -110,6 +114,10 @@ _LIBZFS_CORE_H int lzc_receive_with_cmdprops(const char *, nvlist_t *,
     nvlist_t *, uint8_t *, uint_t, const char *, boolean_t, boolean_t,
     boolean_t, int, const struct dmu_replay_record *, int, uint64_t *,
     uint64_t *, uint64_t *, nvlist_t **);
+_LIBZFS_CORE_H int lzc_receive_with_heal(const char *, nvlist_t *, nvlist_t *,
+    uint8_t *, uint_t, const char *, boolean_t, boolean_t, boolean_t, boolean_t,
+    int, const struct dmu_replay_record *, int, uint64_t *, uint64_t *,
+    uint64_t *, nvlist_t **);
 _LIBZFS_CORE_H int lzc_send_space(const char *, const char *,
     enum lzc_send_flags, uint64_t *);
 _LIBZFS_CORE_H int lzc_send_space_resume_redacted(const char *, const char *,
@@ -143,6 +151,10 @@ _LIBZFS_CORE_H int lzc_wait_fs(const char *, zfs_wait_activity_t, boolean_t *);
 
 _LIBZFS_CORE_H int lzc_set_bootenv(const char *, const nvlist_t *);
 _LIBZFS_CORE_H int lzc_get_bootenv(const char *, nvlist_t **);
+
+_LIBZFS_CORE_H int lzc_get_vdev_prop(const char *, nvlist_t *, nvlist_t **);
+_LIBZFS_CORE_H int lzc_set_vdev_prop(const char *, nvlist_t *, nvlist_t **);
+
 #ifdef	__cplusplus
 }
 #endif

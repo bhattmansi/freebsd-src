@@ -342,10 +342,15 @@ __END_DECLS
 #define	IPPORT_MAX		65535
 
 /*
- * Definitions of bits in internet address integers.
- * On subnets, the decomposition of addresses to host and net parts
- * is done according to subnet mask, not the masks here.
+ * Historical definitions of bits in internet address integers
+ * (pre-CIDR).  Class A/B/C are long obsolete, and now deprecated.
+ * Hide these definitions from the kernel unless IN_HISTORICAL_NETS
+ * is defined.  Provide the historical definitions to user level for now.
  */
+#ifndef _KERNEL
+#define IN_HISTORICAL_NETS
+#endif
+#ifdef IN_HISTORICAL_NETS
 #define	IN_CLASSA(i)		(((in_addr_t)(i) & 0x80000000) == 0)
 #define	IN_CLASSA_NET		0xff000000
 #define	IN_CLASSA_NSHIFT	24
@@ -362,18 +367,29 @@ __END_DECLS
 #define	IN_CLASSC_NET		0xffffff00
 #define	IN_CLASSC_NSHIFT	8
 #define	IN_CLASSC_HOST		0x000000ff
+#endif /* IN_HISTORICAL_NETS */
 
-#define	IN_CLASSD(i)		(((in_addr_t)(i) & 0xf0000000) == 0xe0000000)
+#define	IN_NETMASK_DEFAULT	0xffffff00	/* mask when forced to guess */
+
+#define	IN_MULTICAST(i)		(((in_addr_t)(i) & 0xf0000000) == 0xe0000000)
+#ifdef IN_HISTORICAL_NETS
+#define	IN_CLASSD(i)		IN_MULTICAST(i)
 #define	IN_CLASSD_NET		0xf0000000	/* These ones aren't really */
 #define	IN_CLASSD_NSHIFT	28		/* net and host fields, but */
 #define	IN_CLASSD_HOST		0x0fffffff	/* routing needn't know.    */
-#define	IN_MULTICAST(i)		IN_CLASSD(i)
+#endif /* IN_HISTORICAL_NETS */
 
 #define	IN_EXPERIMENTAL(i)	(((in_addr_t)(i) & 0xf0000000) == 0xf0000000)
 #define	IN_BADCLASS(i)		(((in_addr_t)(i) & 0xf0000000) == 0xf0000000)
 
 #define IN_LINKLOCAL(i)		(((in_addr_t)(i) & 0xffff0000) == 0xa9fe0000)
+#ifdef _KERNEL
+#define IN_LOOPBACK(i) \
+    (((in_addr_t)(i) & V_in_loopback_mask) == 0x7f000000)
+#define IN_LOOPBACK_MASK_DFLT	0xff000000
+#else
 #define IN_LOOPBACK(i)		(((in_addr_t)(i) & 0xff000000) == 0x7f000000)
+#endif
 #define IN_ZERONET(i)		(((in_addr_t)(i) & 0xff000000) == 0)
 
 #define	IN_PRIVATE(i)	((((in_addr_t)(i) & 0xff000000) == 0x0a000000) || \
@@ -398,9 +414,23 @@ __END_DECLS
 #define	INADDR_ALLMDNS_GROUP	((in_addr_t)0xe00000fb)	/* 224.0.0.251 */
 #define	INADDR_MAX_LOCAL_GROUP	((in_addr_t)0xe00000ff)	/* 224.0.0.255 */
 
+#ifdef IN_HISTORICAL_NETS
 #define	IN_LOOPBACKNET		127			/* official! */
+#endif /* IN_HISTORICAL_NETS */
 
 #define	IN_RFC3021_MASK		((in_addr_t)0xfffffffe)
+
+#ifdef _KERNEL
+#include <net/vnet.h>
+
+VNET_DECLARE(bool, ip_allow_net0);
+VNET_DECLARE(bool, ip_allow_net240);
+/* Address space reserved for loopback */
+VNET_DECLARE(uint32_t, in_loopback_mask);
+#define	V_ip_allow_net0		VNET(ip_allow_net0)
+#define	V_ip_allow_net240	VNET(ip_allow_net240)
+#define	V_in_loopback_mask	VNET(in_loopback_mask)
+#endif
 
 /*
  * Options for use with [gs]etsockopt at the IP level.
@@ -649,7 +679,8 @@ int	 in_broadcast(struct in_addr, struct ifnet *);
 int	 in_ifaddr_broadcast(struct in_addr, struct in_ifaddr *);
 int	 in_canforward(struct in_addr);
 int	 in_localaddr(struct in_addr);
-int	 in_localip(struct in_addr);
+bool	 in_localip(struct in_addr);
+bool	 in_localip_fib(struct in_addr, uint16_t);
 int	 in_ifhasaddr(struct ifnet *, struct in_addr);
 struct in_ifaddr *in_findlocal(uint32_t, bool);
 int	 inet_aton(const char *, struct in_addr *); /* in libkern */
@@ -665,6 +696,23 @@ void	 in_ifdetach(struct ifnet *);
 #define	satosin(sa)	((struct sockaddr_in *)(sa))
 #define	sintosa(sin)	((struct sockaddr *)(sin))
 #define	ifatoia(ifa)	((struct in_ifaddr *)(ifa))
+
+typedef int	ipproto_input_t(struct mbuf **, int *, int);
+typedef void	ipproto_ctlinput_t(int, struct sockaddr *, void *);
+int	ipproto_register(uint8_t, ipproto_input_t, ipproto_ctlinput_t);
+int	ipproto_unregister(uint8_t);
+int	ip6proto_register(uint8_t, ipproto_input_t, ipproto_ctlinput_t);
+int	ip6proto_unregister(uint8_t);
+#define	IPPROTO_REGISTER(prot, input, ctl)	do {			\
+	int error __diagused;						\
+	error = ipproto_register(prot, input, ctl);			\
+	MPASS(error == 0);						\
+} while (0)
+#define	IP6PROTO_REGISTER(prot, input, ctl)	do {			\
+	int error __diagused;						\
+	error = ip6proto_register(prot, input, ctl);			\
+	MPASS(error == 0);						\
+} while (0)
 #endif /* _KERNEL */
 
 /* INET6 stuff */

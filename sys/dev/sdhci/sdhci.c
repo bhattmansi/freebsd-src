@@ -106,7 +106,6 @@ static void sdhci_init(struct sdhci_slot *slot);
 static void sdhci_read_block_pio(struct sdhci_slot *slot);
 static void sdhci_req_done(struct sdhci_slot *slot);
 static void sdhci_req_wakeup(struct mmc_request *req);
-static void sdhci_reset(struct sdhci_slot *slot, uint8_t mask);
 static void sdhci_retune(void *arg);
 static void sdhci_set_clock(struct sdhci_slot *slot, uint32_t clock);
 static void sdhci_set_power(struct sdhci_slot *slot, u_char power);
@@ -133,7 +132,7 @@ static int sdhci_cam_update_ios(struct sdhci_slot *slot);
 #endif
 
 /* helper routines */
-static int sdhci_dma_alloc(struct sdhci_slot *slot, uint32_t caps);
+static int sdhci_dma_alloc(struct sdhci_slot *slot);
 static void sdhci_dma_free(struct sdhci_slot *slot);
 static void sdhci_dumpcaps(struct sdhci_slot *slot);
 static void sdhci_dumpcaps_buf(struct sdhci_slot *slot, struct sbuf *s);
@@ -370,66 +369,6 @@ sdhci_syctl_dumpcaps(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
-static void
-sdhci_reset(struct sdhci_slot *slot, uint8_t mask)
-{
-	int timeout;
-	uint32_t clock;
-
-	if (slot->quirks & SDHCI_QUIRK_NO_CARD_NO_RESET) {
-		if (!SDHCI_GET_CARD_PRESENT(slot->bus, slot))
-			return;
-	}
-
-	/* Some controllers need this kick or reset won't work. */
-	if ((mask & SDHCI_RESET_ALL) == 0 &&
-	    (slot->quirks & SDHCI_QUIRK_CLOCK_BEFORE_RESET)) {
-		/* This is to force an update */
-		clock = slot->clock;
-		slot->clock = 0;
-		sdhci_set_clock(slot, clock);
-	}
-
-	if (mask & SDHCI_RESET_ALL) {
-		slot->clock = 0;
-		slot->power = 0;
-	}
-
-	WR1(slot, SDHCI_SOFTWARE_RESET, mask);
-
-	if (slot->quirks & SDHCI_QUIRK_WAITFOR_RESET_ASSERTED) {
-		/*
-		 * Resets on TI OMAPs and AM335x are incompatible with SDHCI
-		 * specification.  The reset bit has internal propagation delay,
-		 * so a fast read after write returns 0 even if reset process is
-		 * in progress.  The workaround is to poll for 1 before polling
-		 * for 0.  In the worst case, if we miss seeing it asserted the
-		 * time we spent waiting is enough to ensure the reset finishes.
-		 */
-		timeout = 10000;
-		while ((RD1(slot, SDHCI_SOFTWARE_RESET) & mask) != mask) {
-			if (timeout <= 0)
-				break;
-			timeout--;
-			DELAY(1);
-		}
-	}
-
-	/* Wait max 100 ms */
-	timeout = 10000;
-	/* Controller clears the bits when it's done */
-	while (RD1(slot, SDHCI_SOFTWARE_RESET) & mask) {
-		if (timeout <= 0) {
-			slot_printf(slot, "Reset 0x%x never completed.\n",
-			    mask);
-			sdhci_dumpregs(slot);
-			return;
-		}
-		timeout--;
-		DELAY(10);
-	}
-}
-
 static uint32_t
 sdhci_tuning_intmask(const struct sdhci_slot *slot)
 {
@@ -449,7 +388,7 @@ static void
 sdhci_init(struct sdhci_slot *slot)
 {
 
-	sdhci_reset(slot, SDHCI_RESET_ALL);
+	SDHCI_RESET(slot->bus, slot, SDHCI_RESET_ALL);
 
 	/* Enable interrupts. */
 	slot->intmask = SDHCI_INT_BUS_POWER | SDHCI_INT_DATA_END_BIT |
@@ -744,7 +683,9 @@ static void
 sdhci_card_task(void *arg, int pending __unused)
 {
 	struct sdhci_slot *slot = arg;
+#ifndef MMCCAM
 	device_t d;
+#endif
 
 	SDHCI_LOCK(slot);
 	if (SDHCI_GET_CARD_PRESENT(slot->bus, slot)) {
@@ -775,11 +716,11 @@ sdhci_card_task(void *arg, int pending __unused)
 		if (slot->card_present == 1) {
 #else
 		if (slot->dev != NULL) {
+			d = slot->dev;
 #endif
 			/* If no card present - detach mmc bus. */
 			if (bootverbose || sdhci_debug)
 				slot_printf(slot, "Card removed\n");
-			d = slot->dev;
 			slot->dev = NULL;
 #ifdef MMCCAM
 			slot->card_present = 0;
@@ -849,7 +790,7 @@ sdhci_card_poll(void *arg)
 }
 
 static int
-sdhci_dma_alloc(struct sdhci_slot *slot, uint32_t caps)
+sdhci_dma_alloc(struct sdhci_slot *slot)
 {
 	int err;
 
@@ -882,8 +823,7 @@ sdhci_dma_alloc(struct sdhci_slot *slot, uint32_t caps)
 	 * be aligned to the SDMA boundary.
 	 */
 	err = bus_dma_tag_create(bus_get_dma_tag(slot->bus), slot->sdma_bbufsz,
-	    0, (caps & SDHCI_CAN_DO_64BIT) ? BUS_SPACE_MAXADDR :
-	    BUS_SPACE_MAXADDR_32BIT, BUS_SPACE_MAXADDR, NULL, NULL,
+	    0, BUS_SPACE_MAXADDR_32BIT, BUS_SPACE_MAXADDR, NULL, NULL,
 	    slot->sdma_bbufsz, 1, slot->sdma_bbufsz, BUS_DMA_ALLOCNOW,
 	    NULL, NULL, &slot->dmatag);
 	if (err != 0) {
@@ -1168,7 +1108,7 @@ no_tuning:
 		slot->opt &= ~SDHCI_HAVE_DMA;
 
 	if (slot->opt & SDHCI_HAVE_DMA) {
-		err = sdhci_dma_alloc(slot, caps);
+		err = sdhci_dma_alloc(slot);
 		if (err != 0) {
 			if (slot->opt & SDHCI_TUNING_SUPPORTED) {
 				free(slot->tune_req, M_DEVBUF);
@@ -1256,7 +1196,7 @@ sdhci_cleanup_slot(struct sdhci_slot *slot)
 		device_delete_child(slot->bus, d);
 
 	SDHCI_LOCK(slot);
-	sdhci_reset(slot, SDHCI_RESET_ALL);
+	SDHCI_RESET(slot->bus, slot, SDHCI_RESET_ALL);
 	SDHCI_UNLOCK(slot);
 	if (slot->opt & SDHCI_HAVE_DMA)
 		sdhci_dma_free(slot);
@@ -1283,7 +1223,7 @@ sdhci_generic_suspend(struct sdhci_slot *slot)
 	callout_drain(&slot->retune_callout);
 	SDHCI_LOCK(slot);
 	slot->opt &= ~SDHCI_TUNING_ENABLED;
-	sdhci_reset(slot, SDHCI_RESET_ALL);
+	SDHCI_RESET(slot->bus, slot, SDHCI_RESET_ALL);
 	SDHCI_UNLOCK(slot);
 
 	return (0);
@@ -1298,6 +1238,67 @@ sdhci_generic_resume(struct sdhci_slot *slot)
 	SDHCI_UNLOCK(slot);
 
 	return (0);
+}
+
+void
+sdhci_generic_reset(device_t brdev __unused, struct sdhci_slot *slot,
+    uint8_t mask)
+{
+	int timeout;
+	uint32_t clock;
+
+	if (slot->quirks & SDHCI_QUIRK_NO_CARD_NO_RESET) {
+		if (!SDHCI_GET_CARD_PRESENT(slot->bus, slot))
+			return;
+	}
+
+	/* Some controllers need this kick or reset won't work. */
+	if ((mask & SDHCI_RESET_ALL) == 0 &&
+	    (slot->quirks & SDHCI_QUIRK_CLOCK_BEFORE_RESET)) {
+		/* This is to force an update */
+		clock = slot->clock;
+		slot->clock = 0;
+		sdhci_set_clock(slot, clock);
+	}
+
+	if (mask & SDHCI_RESET_ALL) {
+		slot->clock = 0;
+		slot->power = 0;
+	}
+
+	WR1(slot, SDHCI_SOFTWARE_RESET, mask);
+
+	if (slot->quirks & SDHCI_QUIRK_WAITFOR_RESET_ASSERTED) {
+		/*
+		 * Resets on TI OMAPs and AM335x are incompatible with SDHCI
+		 * specification.  The reset bit has internal propagation delay,
+		 * so a fast read after write returns 0 even if reset process is
+		 * in progress.  The workaround is to poll for 1 before polling
+		 * for 0.  In the worst case, if we miss seeing it asserted the
+		 * time we spent waiting is enough to ensure the reset finishes.
+		 */
+		timeout = 10000;
+		while ((RD1(slot, SDHCI_SOFTWARE_RESET) & mask) != mask) {
+			if (timeout <= 0)
+				break;
+			timeout--;
+			DELAY(1);
+		}
+	}
+
+	/* Wait max 100 ms */
+	timeout = 10000;
+	/* Controller clears the bits when it's done */
+	while (RD1(slot, SDHCI_SOFTWARE_RESET) & mask) {
+		if (timeout <= 0) {
+			slot_printf(slot, "Reset 0x%x never completed.\n",
+			    mask);
+			sdhci_dumpregs(slot);
+			return;
+		}
+		timeout--;
+		DELAY(10);
+	}
 }
 
 uint32_t
@@ -1391,7 +1392,8 @@ sdhci_generic_update_ios(device_t brdev, device_t reqdev)
 	SDHCI_SET_UHS_TIMING(brdev, slot);
 	/* Some controllers like reset after bus changes. */
 	if (slot->quirks & SDHCI_QUIRK_RESET_ON_IOS)
-		sdhci_reset(slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot,
+		    SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 
 	SDHCI_UNLOCK(slot);
 	return (0);
@@ -1634,7 +1636,7 @@ sdhci_exec_tuning(struct sdhci_slot *slot, bool reset)
 	slot_printf(slot, "Tuning failed, using fixed sampling clock\n");
 	WR2(slot, SDHCI_HOST_CONTROL2, hostctrl2 & ~(SDHCI_CTRL2_EXEC_TUNING |
 	    SDHCI_CTRL2_SAMPLING_CLOCK));
-	sdhci_reset(slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+	SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 	return (EIO);
 }
 
@@ -1688,9 +1690,7 @@ sdhci_req_done(struct sdhci_slot *slot)
 static void
 sdhci_req_wakeup(struct mmc_request *req)
 {
-	struct sdhci_slot *slot;
 
-	slot = req->done_data;
 	req->flags |= MMC_REQ_DONE;
 	wakeup(req);
 }
@@ -1703,7 +1703,8 @@ sdhci_timeout(void *arg)
 	if (slot->curcmd != NULL) {
 		slot_printf(slot, "Controller timeout\n");
 		sdhci_dumpregs(slot);
-		sdhci_reset(slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot,
+		    SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 		slot->curcmd->error = MMC_ERR_TIMEOUT;
 		sdhci_req_done(slot);
 	} else {
@@ -1881,8 +1882,8 @@ sdhci_finish_command(struct sdhci_slot *slot)
 	if (slot->curcmd->error) {
 		if (slot->curcmd->error == MMC_ERR_BADCRC)
 			slot->retune_req |= SDHCI_RETUNE_REQ_RESET;
-		sdhci_reset(slot, SDHCI_RESET_CMD);
-		sdhci_reset(slot, SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
 		sdhci_start(slot);
 		return;
 	}
@@ -2041,8 +2042,8 @@ sdhci_finish_data(struct sdhci_slot *slot)
 	if (slot->curcmd->error) {
 		if (slot->curcmd->error == MMC_ERR_BADCRC)
 			slot->retune_req |= SDHCI_RETUNE_REQ_RESET;
-		sdhci_reset(slot, SDHCI_RESET_CMD);
-		sdhci_reset(slot, SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
 		sdhci_start(slot);
 		return;
 	}
@@ -2084,8 +2085,8 @@ sdhci_start(struct sdhci_slot *slot)
 		slot_printf(slot, "result: %d\n", mmcio->cmd.error);
 	if (mmcio->cmd.error == 0 &&
 	    (slot->quirks & SDHCI_QUIRK_RESET_AFTER_REQUEST)) {
-		sdhci_reset(slot, SDHCI_RESET_CMD);
-		sdhci_reset(slot, SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
 	}
 
 	sdhci_req_done(slot);
@@ -2117,8 +2118,8 @@ sdhci_start(struct sdhci_slot *slot)
 	    ((slot->curcmd == req->stop &&
 	     (slot->quirks & SDHCI_QUIRK_BROKEN_AUTO_STOP)) ||
 	     (slot->quirks & SDHCI_QUIRK_RESET_AFTER_REQUEST))) {
-		sdhci_reset(slot, SDHCI_RESET_CMD);
-		sdhci_reset(slot, SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
 	}
 
 	sdhci_req_done(slot);
@@ -2343,7 +2344,7 @@ sdhci_acmd_irq(struct sdhci_slot *slot, uint16_t acmd_err)
 		return;
 	}
 	slot_printf(slot, "Got AutoCMD12 error 0x%04x\n", acmd_err);
-	sdhci_reset(slot, SDHCI_RESET_CMD);
+	SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
 }
 
 void
@@ -2725,7 +2726,7 @@ sdhci_cam_action(struct cam_sim *sim, union ccb *ccb)
 void
 sdhci_cam_poll(struct cam_sim *sim)
 {
-	return;
+	sdhci_generic_intr(cam_sim_softc(sim));
 }
 
 static int
@@ -2849,7 +2850,8 @@ sdhci_cam_update_ios(struct sdhci_slot *slot)
 	WR1(slot, SDHCI_HOST_CONTROL, slot->hostctrl);
 	/* Some controllers like reset after bus changes. */
 	if(slot->quirks & SDHCI_QUIRK_RESET_ON_IOS)
-		sdhci_reset(slot, SDHCI_RESET_CMD | SDHCI_RESET_DATA);
+		SDHCI_RESET(slot->bus, slot,
+		    SDHCI_RESET_CMD | SDHCI_RESET_DATA);
 
 	SDHCI_UNLOCK(slot);
 	return (0);
@@ -2886,12 +2888,6 @@ sdhci_cam_request(struct sdhci_slot *slot, union ccb *ccb)
 	slot->flags = 0;
 	sdhci_start(slot);
 	SDHCI_UNLOCK(slot);
-	if (dumping) {
-		while (slot->ccb != NULL) {
-			sdhci_generic_intr(slot);
-			DELAY(10);
-		}
-	}
 	return (0);
 }
 #endif /* MMCCAM */

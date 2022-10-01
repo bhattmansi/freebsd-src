@@ -251,8 +251,9 @@ struct xvnode {
 #define	VIRF_PGREAD	0x0002	/* Direct reads from the page cache are permitted,
 				   never cleared once set */
 #define	VIRF_MOUNTPOINT	0x0004	/* This vnode is mounted on */
+#define	VIRF_TEXT_REF	0x0008	/* Executable mappings ref the vnode */
 
-#define	VI_TEXT_REF	0x0001	/* Text ref grabbed use ref */
+#define	VI_UNUSED0	0x0001	/* unused */
 #define	VI_MOUNT	0x0002	/* Mount in progress */
 #define	VI_DOINGINACT	0x0004	/* VOP_INACTIVE is in progress */
 #define	VI_OWEINACT	0x0008	/* Need to call inactive */
@@ -269,7 +270,7 @@ struct xvnode {
 #define	VV_COPYONWRITE	0x0040	/* vnode is doing copy-on-write */
 #define	VV_SYSTEM	0x0080	/* vnode being used by kernel */
 #define	VV_PROCDEP	0x0100	/* vnode is process dependent */
-#define	VV_NOKNOTE	0x0200	/* don't activate knotes on this vnode */
+#define	VV_UNLINKED	0x0200	/* unlinked but stil open directory */
 #define	VV_DELETED	0x0400	/* should be removed */
 #define	VV_MD		0x0800	/* vnode backs the md device */
 #define	VV_FORCEINSMQ	0x1000	/* force the insmntque to succeed */
@@ -430,7 +431,8 @@ extern int		vttoif_tab[];
 #define	V_WAIT		0x0001	/* vn_start_write: sleep for suspend */
 #define	V_NOWAIT	0x0002	/* vn_start_write: don't sleep for suspend */
 #define	V_XSLEEP	0x0004	/* vn_start_write: just return after sleep */
-#define	V_MNTREF	0x0010	/* vn_start_write: mp is already ref-ed */
+#define	V_PCATCH	0x0008	/* vn_start_write: make the sleep interruptible */
+#define	V_VALID_FLAGS (V_WAIT | V_NOWAIT | V_XSLEEP | V_PCATCH)
 
 #define	VR_START_WRITE	0x0001	/* vfs_write_resume: start write atomically */
 #define	VR_NO_SUSPCLR	0x0002	/* vfs_write_resume: do not clear suspension */
@@ -615,6 +617,7 @@ typedef void vop_getpages_iodone_t(void *, vm_page_t *, int, int);
 #define	VN_OPEN_NOCAPCHECK	0x00000002
 #define	VN_OPEN_NAMECACHE	0x00000004
 #define	VN_OPEN_INVFS		0x00000008
+#define	VN_OPEN_WANTIOCTLCAPS	0x00000010
 
 /* copy_file_range kernel flags */
 #define	COPY_FILE_RANGE_KFLAGS		0xff000000
@@ -682,21 +685,23 @@ cache_validate(struct vnode *dvp, struct vnode *vp, struct componentname *cnp)
 void	cache_fast_lookup_enabled_recalc(void);
 int	change_dir(struct vnode *vp, struct thread *td);
 void	cvtstat(struct stat *st, struct ostat *ost);
-void	freebsd11_cvtnstat(struct stat *sb, struct nstat *nsb);
+int	freebsd11_cvtnstat(struct stat *sb, struct nstat *nsb);
 int	freebsd11_cvtstat(struct stat *st, struct freebsd11_stat *ost);
 int	getnewvnode(const char *tag, struct mount *mp, struct vop_vector *vops,
 	    struct vnode **vpp);
 void	getnewvnode_reserve(void);
 void	getnewvnode_drop_reserve(void);
-int	insmntque1(struct vnode *vp, struct mount *mp,
-	    void (*dtr)(struct vnode *, void *), void *dtr_arg);
 int	insmntque(struct vnode *vp, struct mount *mp);
+int	insmntque1(struct vnode *vp, struct mount *mp);
 u_quad_t init_va_filerev(void);
 int	speedup_syncer(void);
 int	vn_vptocnp(struct vnode **vp, char *buf, size_t *buflen);
 int	vn_getcwd(char *buf, char **retbuf, size_t *buflen);
 int	vn_fullpath(struct vnode *vp, char **retbuf, char **freebuf);
 int	vn_fullpath_global(struct vnode *vp, char **retbuf, char **freebuf);
+int	vn_fullpath_hardlink(struct vnode *vp, struct vnode *dvp,
+	    const char *hdrl_name, size_t hrdl_name_length, char **retbuf,
+	    char **freebuf, size_t *buflen);
 struct vnode *
 	vn_dir_dd_ino(struct vnode *vp);
 int	vn_commname(struct vnode *vn, char *buf, u_int buflen);
@@ -767,6 +772,8 @@ int	vn_open_cred(struct nameidata *ndp, int *flagp, int cmode,
 int	vn_open_vnode(struct vnode *vp, int fmode, struct ucred *cred,
 	    struct thread *td, struct file *fp);
 void	vn_pages_remove(struct vnode *vp, vm_pindex_t start, vm_pindex_t end);
+void	vn_pages_remove_valid(struct vnode *vp, vm_pindex_t start,
+	    vm_pindex_t end);
 int	vn_pollrecord(struct vnode *vp, struct thread *p, int events);
 int	vn_rdwr(enum uio_rw rw, struct vnode *vp, void *base,
 	    int len, off_t offset, enum uio_seg segflg, int ioflg,
@@ -779,6 +786,10 @@ int	vn_rdwr_inchunks(enum uio_rw rw, struct vnode *vp, void *base,
 int	vn_read_from_obj(struct vnode *vp, struct uio *uio);
 int	vn_rlimit_fsize(const struct vnode *vp, const struct uio *uio,
 	    struct thread *td);
+int	vn_rlimit_fsizex(const struct vnode *vp, struct uio *uio,
+	    off_t maxfsz, ssize_t *resid_adj, struct thread *td);
+void	vn_rlimit_fsizex_res(struct uio *uio, ssize_t resid_adj);
+int	vn_rlimit_trunc(u_quad_t size, struct thread *td);
 int	vn_start_write(struct vnode *vp, struct mount **mpp, int flags);
 int	vn_start_secondary_write(struct vnode *vp, struct mount **mpp,
 	    int flags);
@@ -874,6 +885,7 @@ int	vop_stdvptofh(struct vop_vptofh_args *ap);
 int	vop_stdunp_bind(struct vop_unp_bind_args *ap);
 int	vop_stdunp_connect(struct vop_unp_connect_args *ap);
 int	vop_stdunp_detach(struct vop_unp_detach_args *ap);
+int	vop_stdadd_writecount_nomsync(struct vop_add_writecount_args *ap);
 int	vop_eopnotsupp(struct vop_generic_args *ap);
 int	vop_ebadf(struct vop_generic_args *ap);
 int	vop_einval(struct vop_generic_args *ap);
@@ -924,10 +936,14 @@ void	vop_symlink_post(void *a, int rc);
 int	vop_sigdefer(struct vop_vector *vop, struct vop_generic_args *a);
 
 #ifdef DEBUG_VFS_LOCKS
+void	vop_fdatasync_debugpre(void *a);
+void	vop_fdatasync_debugpost(void *a, int rc);
 void	vop_fplookup_vexec_debugpre(void *a);
 void	vop_fplookup_vexec_debugpost(void *a, int rc);
 void	vop_fplookup_symlink_debugpre(void *a);
 void	vop_fplookup_symlink_debugpost(void *a, int rc);
+void	vop_fsync_debugpre(void *a);
+void	vop_fsync_debugpost(void *a, int rc);
 void	vop_strategy_debugpre(void *a);
 void	vop_lock_debugpre(void *a);
 void	vop_lock_debugpost(void *a, int rc);
@@ -936,10 +952,14 @@ void	vop_need_inactive_debugpre(void *a);
 void	vop_need_inactive_debugpost(void *a, int rc);
 void	vop_mkdir_debugpost(void *a, int rc);
 #else
+#define	vop_fdatasync_debugpre(x)		do { } while (0)
+#define	vop_fdatasync_debugpost(x, y)		do { } while (0)
 #define	vop_fplookup_vexec_debugpre(x)		do { } while (0)
 #define	vop_fplookup_vexec_debugpost(x, y)	do { } while (0)
 #define	vop_fplookup_symlink_debugpre(x)	do { } while (0)
 #define	vop_fplookup_symlink_debugpost(x, y)	do { } while (0)
+#define	vop_fsync_debugpre(x)			do { } while (0)
+#define	vop_fsync_debugpost(x, y)		do { } while (0)
 #define	vop_strategy_debugpre(x)		do { } while (0)
 #define	vop_lock_debugpre(x)			do { } while (0)
 #define	vop_lock_debugpost(x, y)		do { } while (0)
@@ -952,18 +972,23 @@ void	vop_mkdir_debugpost(void *a, int rc);
 void	vop_rename_fail(struct vop_rename_args *ap);
 
 #define	vop_stat_helper_pre(ap)	({						\
+	struct vop_stat_args *_ap = (ap);					\
 	int _error;								\
 	AUDIT_ARG_VNODE1(ap->a_vp);						\
-	_error = mac_vnode_check_stat(ap->a_active_cred, ap->a_file_cred, ap->a_vp);\
-	if (__predict_true(_error == 0))					\
-		bzero(ap->a_sb, sizeof(*ap->a_sb));				\
+	_error = mac_vnode_check_stat(_ap->a_active_cred, _ap->a_file_cred, _ap->a_vp);\
+	if (__predict_true(_error == 0)) {					\
+		ap->a_sb->st_padding0 = 0;					\
+		ap->a_sb->st_padding1 = 0;					\
+		bzero(_ap->a_sb->st_spare, sizeof(_ap->a_sb->st_spare));	\
+	}									\
 	_error;									\
 })
 
 #define	vop_stat_helper_post(ap, error)	({					\
+	struct vop_stat_args *_ap = (ap);					\
 	int _error = (error);							\
-	if (priv_check_cred_vfs_generation(ap->a_active_cred))			\
-		ap->a_sb->st_gen = 0;						\
+	if (priv_check_cred_vfs_generation(_ap->a_active_cred))			\
+		_ap->a_sb->st_gen = 0;						\
 	_error;									\
 })
 

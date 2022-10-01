@@ -2440,6 +2440,10 @@ extern void dtrace_helpers_destroy(proc_t *);
 #define	DTRACE_INVOP_NOP		4
 #define	DTRACE_INVOP_RET		5
 
+#if defined(__amd64)
+#define	DTRACE_INVOP_CALL		6
+#endif
+
 #elif defined(__powerpc__)
 
 #define DTRACE_INVOP_BCTR	1
@@ -2465,6 +2469,9 @@ extern void dtrace_helpers_destroy(proc_t *);
 #define	B_MASK		0xff000000
 #define	B_DATA_MASK	0x00ffffff
 #define	B_INSTR		0x14000000
+
+#define	BTI_MASK	0xffffff3f
+#define	BTI_INSTR	0xd503241f
 
 #define	NOP_INSTR	0xd503201f
 

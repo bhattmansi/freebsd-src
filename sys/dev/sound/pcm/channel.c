@@ -29,8 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include "opt_isa.h"
-
 #ifdef HAVE_KERNEL_OPTION_HEADERS
 #include "opt_snd.h"
 #endif
@@ -69,7 +67,7 @@ sysctl_hw_snd_latency(SYSCTL_HANDLER_ARGS)
 	return err;
 }
 SYSCTL_PROC(_hw_snd, OID_AUTO, latency,
-    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT, 0, sizeof(int),
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, 0, sizeof(int),
     sysctl_hw_snd_latency, "I",
     "buffering latency (0=low ... 10=high)");
 
@@ -92,7 +90,7 @@ sysctl_hw_snd_latency_profile(SYSCTL_HANDLER_ARGS)
 	return err;
 }
 SYSCTL_PROC(_hw_snd, OID_AUTO, latency_profile,
-    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT, 0, sizeof(int),
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, 0, sizeof(int),
     sysctl_hw_snd_latency_profile, "I",
     "buffering latency profile (0=aggressive 1=safe)");
 
@@ -115,7 +113,7 @@ sysctl_hw_snd_timeout(SYSCTL_HANDLER_ARGS)
 	return err;
 }
 SYSCTL_PROC(_hw_snd, OID_AUTO, timeout,
-    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT, 0, sizeof(int),
+    CTLTYPE_INT | CTLFLAG_RWTUN | CTLFLAG_MPSAFE, 0, sizeof(int),
     sysctl_hw_snd_timeout, "I",
     "interrupt timeout (1 - 10) seconds");
 
@@ -1703,7 +1701,7 @@ round_blksz(u_int32_t v, int round)
  * balanced performance for typical workload. Anything below 5 will
  * eat up CPU to keep up with increasing context switches because of
  * shorter buffer space and usually require the application to handle it
- * aggresively through possibly real time programming technique.
+ * aggressively through possibly real time programming technique.
  *
  */
 #define CHN_LATENCY_PBLKCNT_REF				\
@@ -2191,17 +2189,10 @@ chn_syncstate(struct pcm_channel *c)
 int
 chn_trigger(struct pcm_channel *c, int go)
 {
-#ifdef DEV_ISA
-    	struct snd_dbuf *b = c->bufhard;
-#endif
 	struct snddev_info *d = c->parentsnddev;
 	int ret;
 
 	CHN_LOCKASSERT(c);
-#ifdef DEV_ISA
-	if (SND_DMA(b) && (go == PCMTRIG_EMLDMAWR || go == PCMTRIG_EMLDMARD))
-		sndbuf_dmabounce(b);
-#endif
 	if (!PCMTRIG_COMMON(go))
 		return (CHANNEL_TRIGGER(c->methods, c->devinfo, go));
 

@@ -163,8 +163,8 @@ void	*memcchr(const void *s, int c, size_t n);
 void	*memmem(const void *l, size_t l_len, const void *s, size_t s_len);
 void	 qsort(void *base, size_t nmemb, size_t size,
 	    int (*compar)(const void *, const void *));
-void	 qsort_r(void *base, size_t nmemb, size_t size, void *thunk,
-	    int (*compar)(void *, const void *, const void *));
+void	 qsort_r(void *base, size_t nmemb, size_t size,
+	    int (*compar)(const void *, const void *, void *), void *thunk);
 u_long	 random(void);
 int	 scanc(u_int, const u_char *, const u_char *, int);
 int	 strcasecmp(const char *, const char *);
@@ -224,6 +224,22 @@ rindex(const char *p, int ch)
 {
 
 	return (strrchr(p, ch));
+}
+
+static __inline int64_t
+signed_extend64(uint64_t bitmap, int lsb, int width)
+{
+
+	return ((int64_t)(bitmap << (63 - lsb - (width - 1)))) >>
+	    (63 - (width - 1));
+}
+
+static __inline int32_t
+signed_extend32(uint32_t bitmap, int lsb, int width)
+{
+
+	return ((int32_t)(bitmap << (31 - lsb - (width - 1)))) >>
+	    (31 - (width - 1));
 }
 
 /* fnmatch() return values. */
